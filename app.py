@@ -460,6 +460,47 @@ def create_app() -> Flask:
             }
         ), 200
 
+    @app.route("/test-gmail-recent", methods=["GET"])
+    def test_gmail_recent():
+        """
+        Dev-only endpoint to fetch a few recent emails and show minimal metadata.
+        This proves we can read messages without touching bodies/attachments.
+        """
+        from gmail_client import GmailClient  # avoid circular type issues
+
+        gmail_client: GmailClient | None = app.config.get("GMAIL_CLIENT")
+        if gmail_client is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Gmail client not configured. Check GMAIL_OAUTH_TOKEN_JSON.",
+                    }
+                ),
+                500,
+            )
+
+        try:
+            # Get up to 5 most recent messages from the INBOX
+            message_ids = gmail_client.list_recent_message_ids(
+                max_results=5,
+                label_ids=["INBOX"],
+            )
+            metadata_list = [
+                gmail_client.get_message_metadata(mid) for mid in message_ids
+            ]
+        except Exception as e:
+            logger.exception("Error during /test-gmail-recent")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        return jsonify(
+            {
+                "ok": True,
+                "count": len(metadata_list),
+                "messages": metadata_list,
+            }
+        ), 200
+
     return app
 
 
