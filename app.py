@@ -186,7 +186,7 @@ def create_app() -> Flask:
         callback_query = update.get("callback_query")
         if callback_query:
             data = (callback_query.get("data") or "").strip()
-            cq_from = callback_query.get("from") or {} # cq means callback query
+            cq_from = callback_query.get("from") or {}  # cq means callback query
             message = callback_query.get("message") or {}
             chat = message.get("chat") or {}
             chat_id = chat.get("id")
@@ -444,6 +444,132 @@ def create_app() -> Flask:
 
                 return "", 200
 
+            # ------- reminder_extend:... -> snooze an existing reminder ------- #
+            if data.startswith("reminder_extend:"):
+                # format: reminder_extend:<reminder_id>:<key>
+                parts = data.split(":", 2)
+                if len(parts) != 3:
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Invalid reminder extend action.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                _, reminder_id, offset_key = parts
+
+                if repo is None:
+                    logger.error("Sheets repo not configured; cannot update reminder.")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Storage not configured.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                delta = offset_key_to_delta(offset_key)
+                if delta is None:
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Unknown offset.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                tz = ZoneInfo(settings.timezone)
+                now = datetime.now(tz)
+                new_due_at = now + delta
+
+                try:
+                    updated = repo.update_reminder_due_at(reminder_id, new_due_at)
+                except Exception:
+                    logger.exception("Error updating reminder due_at")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Failed to snooze reminder.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                if not updated:
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Reminder not found.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                if callback_query_id:
+                    bot.answer_callback_query(
+                        callback_query_id,
+                        text="Reminder snoozed.",
+                        show_alert=False,
+                    )
+
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=f"Reminder snoozed to {new_due_at.isoformat()}.",
+                )
+
+                return "", 200
+
+            # ------- reminder_complete:... -> delete reminder ------- #
+            if data.startswith("reminder_complete:"):
+                # format: reminder_complete:<reminder_id>
+                parts = data.split(":", 1)
+                if len(parts) != 2:
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Invalid complete action.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                _, reminder_id = parts
+
+                if repo is None:
+                    logger.error("Sheets repo not configured; cannot delete reminder.")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Storage not configured.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                try:
+                    deleted = repo.delete_reminder(reminder_id)
+                except Exception:
+                    logger.exception("Error deleting reminder")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Failed to delete reminder.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                if callback_query_id:
+                    bot.answer_callback_query(
+                        callback_query_id,
+                        text="Reminder completed." if deleted else "Reminder not found.",
+                        show_alert=False,
+                    )
+
+                if deleted:
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text="Reminder marked as complete and removed.",
+                    )
+
+                return "", 200
+
             # Other callback types (for future flows) fall through
             return "", 200
 
@@ -508,7 +634,7 @@ def create_app() -> Flask:
         # Use the app timezone (Asia/Singapore by default)
         tz = ZoneInfo(app.config["SETTINGS"].timezone)
         now = datetime.now(tz)
-        due_at = now + timedelta(minutes=5)
+        due_at = now - timedelta(minutes=1) # set the timing to 1 minute in the past so i can instantly get the notif
 
         reminder = Reminder(
             reminder_id=str(uuid.uuid4()),
@@ -754,6 +880,109 @@ def create_app() -> Flask:
             {
                 "ok": True,
                 "gmail_message_id": gmail_message_id,
+            }
+        ), 200
+
+    @app.route("/dispatch-due-reminders", methods=["GET", "POST"])
+    def dispatch_due_reminders():
+        """
+        Called by external cron (or manually) every minute.
+
+        Behaviour:
+          - Find reminders with status = "pending" and due_at <= now.
+          - For each, send a Telegram message with control buttons:
+                +1h / +1d / +3d / +1w / Complete
+
+        NOTE: As implemented, if you don't act on a reminder,
+        it will be sent again on each call (every minute) until you
+        snooze or complete it.
+        """
+        bot: TelegramBot | None = app.config.get("TELEGRAM_BOT")
+        repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
+        settings: Settings = app.config["SETTINGS"]
+
+        if bot is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Telegram bot not configured.",
+                    }
+                ),
+                500,
+            )
+
+        if repo is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Sheets repo not configured.",
+                    }
+                ),
+                500,
+            )
+
+        tz = ZoneInfo(settings.timezone)
+        now = datetime.now(tz)
+
+        try:
+            due_reminders = repo.get_due_reminders(now)
+        except Exception as e:
+            logger.exception("Error fetching due reminders")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        dispatched = 0
+
+        for r in due_reminders:
+            # Decide what text to show
+            if r.source_type == "email":
+                subject = r.subject or "(no subject)"
+                sender = r.sender or "(unknown sender)"
+                text = f"Reminder (email):\nFrom: {sender}\nSubject: {subject}"
+            else:
+                desc = r.description or "(no description)"
+                text = f"Reminder:\n{desc}"
+
+            keyboard = bot.build_reminder_control_keyboard(r.reminder_id)
+
+            chat_id = r.telegram_chat_id or (settings.telegram_user_id or 0)
+
+            try:
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=keyboard,
+                )
+                dispatched += 1
+
+                # Mark as notified so we don't send it again
+                try:
+                    updated = repo.update_reminder_status(r.reminder_id, "notified")
+                    if not updated:
+                        logger.warning(
+                            "Failed to update status to 'notified' for reminder_id=%s",
+                            r.reminder_id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Error updating reminder status to 'notified' for %s",
+                        r.reminder_id,
+                    )
+
+            except Exception:
+                logger.exception(
+                    "Error sending reminder %s to chat_id %s",
+                    r.reminder_id,
+                    chat_id,
+                )
+                # continue to next reminder
+
+        return jsonify(
+            {
+                "ok": True,
+                "now": now.isoformat(),
+                "dispatched": dispatched,
             }
         ), 200
 

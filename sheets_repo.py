@@ -214,16 +214,23 @@ class ReminderSheetRepository:
 
     def update_reminder_due_at(self, reminder_id: str, new_due_at: datetime) -> bool:
         """
-        Set due_at = new_due_at for the row matching reminder_id.
+        Set due_at = new_due_at and status = "pending" for the row matching reminder_id.
         Returns True if updated, False if not found.
         """
         reminders = self.get_all_reminders()
         for r in reminders:
             if r.reminder_id == reminder_id and r.row_number is not None:
+                # Update due_at
                 self.worksheet.update_cell(
                     r.row_number,
                     REMINDER_HEADERS.index("due_at") + 1,
                     new_due_at.isoformat(),
+                )
+                # Reset status so it will be picked up again at the new due_at
+                self.worksheet.update_cell(
+                    r.row_number,
+                    REMINDER_HEADERS.index("status") + 1,
+                    "pending",
                 )
                 return True
         return False
@@ -237,5 +244,21 @@ class ReminderSheetRepository:
         for r in reminders:
             if r.reminder_id == reminder_id and r.row_number is not None:
                 self.worksheet.delete_rows(r.row_number)
+                return True
+        return False
+
+    def update_reminder_status(self, reminder_id: str, new_status: str) -> bool:
+        """
+        Set status = new_status for the row matching reminder_id.
+        Returns True if updated, False if not found.
+        """
+        reminders = self.get_all_reminders()
+        for r in reminders:
+            if r.reminder_id == reminder_id and r.row_number is not None:
+                self.worksheet.update_cell(
+                    r.row_number,
+                    REMINDER_HEADERS.index("status") + 1, # python counts from 0, but google sheets count from 1, so need to +1 to offset this
+                    new_status,
+                )
                 return True
         return False

@@ -106,6 +106,19 @@ class TelegramBot:
         except Exception:
             logger.exception("Error answering callback query")
 
+    def delete_message(self, chat_id: int, message_id: int) -> None:
+        """
+        Delete a message in a chat. Used to prevent repeated button presses.
+        """
+        try:
+            self.bot.delete_message(chat_id, message_id)
+        except Exception:
+            logger.exception(
+                "Error deleting Telegram message chat_id=%s message_id=%s",
+                chat_id,
+                message_id,
+            )
+
     # --------- Helpers for email-based reminders --------- #
 
     def build_email_action_keyboard(self, gmail_message_id: str) -> types.InlineKeyboardMarkup:
@@ -157,4 +170,39 @@ class TelegramBot:
         ]
         markup.row(buttons[0], buttons[1])
         markup.row(buttons[2], buttons[3])
+        return markup
+
+    def build_reminder_control_keyboard(self, reminder_id: str) -> types.InlineKeyboardMarkup:
+        """
+        Inline keyboard for a due reminder with:
+          - +1 hour / +1 day / +3 days / +1 week / Complete
+
+        callback_data:
+          - reminder_extend:<reminder_id>:1h
+          - reminder_extend:<reminder_id>:1d
+          - reminder_extend:<reminder_id>:3d
+          - reminder_extend:<reminder_id>:1w
+          - reminder_complete:<reminder_id>
+        """
+        markup = types.InlineKeyboardMarkup()
+        buttons = [
+            types.InlineKeyboardButton(
+                "+1 hour", callback_data=f"reminder_extend:{reminder_id}:1h"
+            ),
+            types.InlineKeyboardButton(
+                "+1 day", callback_data=f"reminder_extend:{reminder_id}:1d"
+            ),
+            types.InlineKeyboardButton(
+                "+3 days", callback_data=f"reminder_extend:{reminder_id}:3d"
+            ),
+            types.InlineKeyboardButton(
+                "+1 week", callback_data=f"reminder_extend:{reminder_id}:1w"
+            ),
+            types.InlineKeyboardButton(
+                "Complete", callback_data=f"reminder_complete:{reminder_id}"
+            ),
+        ]
+        markup.row(buttons[0], buttons[1])
+        markup.row(buttons[2], buttons[3])
+        markup.row(buttons[4])
         return markup
