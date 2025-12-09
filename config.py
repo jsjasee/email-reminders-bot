@@ -1,7 +1,9 @@
 import os  # gives access to environment variables via os.getenv
 from dataclasses import dataclass  # helper that auto-generates boilerplate methods for simple classes
 from typing import Optional  # lets us express "this can be a type OR None", e.g. Optional[str]
+from dotenv import load_dotenv
 
+load_dotenv()
 
 @dataclass  # transforms the Settings class below into a "data class" with an auto-generated __init__, etc.
 class Settings:
