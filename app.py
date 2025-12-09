@@ -1,10 +1,13 @@
 import logging
+import uuid
 
 from flask import Flask, jsonify, request
 
 from config import load_settings, Settings
 from telegram_bot import TelegramBot
-from sheets_repo import ReminderSheetRepository
+from sheets_repo import ReminderSheetRepository, Reminder
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # will show errors in the console with different levels - levels are just priority labels for these messages,
 # like DEBUG, INFO, WARNING etc. (similar to roblox studio)
@@ -129,6 +132,115 @@ def create_app() -> Flask:
         except Exception as e:
             logger.exception("Error during /test-sheets")
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/test-create-reminder", methods=["POST"])
+    def test_create_reminder():
+        """
+        Create a dummy manual reminder due in 5 minute.
+        This tests:
+          - Schema
+          - create_reminder()
+          - datetime storage
+        """
+        repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
+        if repo is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Sheets repo not configured. Check GOOGLE_SHEETS_SPREADSHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON.",
+                    }
+                ),
+                500,
+            )
+
+        settings: Settings = app.config["SETTINGS"]
+
+        # Use the app timezone (Asia/Singapore by default)
+        tz = ZoneInfo(settings.timezone)
+        now = datetime.now(tz)
+        due_at = now + timedelta(minutes=5)
+
+        reminder = Reminder(
+            reminder_id=str(uuid.uuid4()),
+            source_type="manual",
+            gmail_message_id=None,
+            subject=None,
+            sender=None,
+            recipient=None,
+            description="Test reminder from /test-create-reminder",
+            telegram_chat_id=settings.telegram_user_id or 0,
+            due_at=due_at,
+            status="pending",
+        )
+
+        try:
+            repo.create_reminder(reminder)
+        except Exception as e:
+            logger.exception("Error creating test reminder")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        return jsonify(
+            {
+                "ok": True,
+                "reminder_id": reminder.reminder_id,
+                "due_at": reminder.due_at.isoformat(),
+            }
+        )
+
+    @app.route("/test-list-reminders", methods=["GET"])
+    def test_list_reminders():
+        """
+        Return:
+          - all reminders
+          - reminders that are due as of 'now'
+        """
+        repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
+        if repo is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Sheets repo not configured.",
+                    }
+                ),
+                500,
+            )
+
+        settings: Settings = app.config["SETTINGS"]
+        tz = ZoneInfo(settings.timezone)
+        now = datetime.now(tz)
+
+        try:
+            all_reminders = repo.get_all_reminders()
+            due_reminders = repo.get_due_reminders(now)
+        except Exception as e:
+            logger.exception("Error listing reminders")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        def serialize(r: Reminder) -> dict:
+            return {
+                "reminder_id": r.reminder_id,
+                "source_type": r.source_type,
+                "gmail_message_id": r.gmail_message_id,
+                "subject": r.subject,
+                "sender": r.sender,
+                "recipient": r.recipient,
+                "description": r.description,
+                "telegram_chat_id": r.telegram_chat_id,
+                "due_at": r.due_at.isoformat(),
+                "status": r.status,
+                "row_number": r.row_number,
+            }
+
+        return jsonify(
+            {
+                "ok": True,
+                "now": now.isoformat(),
+                "all_reminders": [serialize(r) for r in all_reminders],
+                "due_reminders": [serialize(r) for r in due_reminders],
+            }
+        )
 
     return app
 
