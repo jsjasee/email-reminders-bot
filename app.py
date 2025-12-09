@@ -9,6 +9,7 @@ from sheets_repo import ReminderSheetRepository, Reminder
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional
+from gmail_client import GmailClient
 
 # In-memory per-chat state for /new manual reminders
 manual_new_state: Dict[int, Dict[str, Any]] = {}
@@ -53,6 +54,20 @@ def create_app() -> Flask:
         logger.warning("Google Sheets config missing; repo not initialised.")
 
     app.config["REMINDER_REPO"] = sheets_repo
+
+    # Initialise Gmail client (OAuth-based, using gmail_token.json contents)
+    gmail_client = None
+    if settings.gmail_oauth_token_json:
+        try:
+            gmail_client = GmailClient(settings.gmail_oauth_token_json)
+            logger.info("Initialised GmailClient successfully.")
+        except Exception:
+            logger.exception("Failed to initialise GmailClient.")
+            gmail_client = None
+    else:
+        logger.warning("GMAIL_OAUTH_TOKEN_JSON missing; GmailClient not initialised.")
+
+    app.config["GMAIL_CLIENT"] = gmail_client
 
     @app.route("/", methods=["GET"])
     def index():
@@ -409,6 +424,41 @@ def create_app() -> Flask:
                 "due_reminders": [serialize(r) for r in due_reminders],
             }
         )
+
+    @app.route("/test-gmail-labels", methods=["GET"])
+    def test_gmail_labels():
+        """
+        Dev-only endpoint to verify Gmail OAuth is working.
+
+        Returns the list of labels for the authorised Gmail account.
+        """
+        gmail_client: GmailClient | None = app.config.get("GMAIL_CLIENT")
+        if gmail_client is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Gmail client not configured. Check GMAIL_OAUTH_TOKEN_JSON.",
+                    }
+                ),
+                500,
+            )
+
+        try:
+            labels = gmail_client.list_labels()
+        except Exception as e:
+            logger.exception("Error during /test-gmail-labels")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        return jsonify(
+            {
+                "ok": True,
+                "count": len(labels),
+                "labels": [
+                    {"id": lbl.get("id"), "name": lbl.get("name")} for lbl in labels
+                ],
+            }
+        ), 200
 
     return app
 
