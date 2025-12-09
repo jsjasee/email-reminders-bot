@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any, List, Optional
 
 import gspread
@@ -103,7 +103,7 @@ class ReminderSheetRepository:
         Append a very simple row after the header: [timestamp_utc, note].
         Only used by /test-sheets; safe to keep around.
         """
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         # We'll just append in the first two columns after the header.
         self.worksheet.append_row([now, note])
 
