@@ -20,6 +20,7 @@ class Settings:
 
     # General
     timezone: str  # required string; e.g. "Asia/Singapore"
+    webhook_url: str # webhook url
 
 
 def load_settings() -> Settings:
@@ -51,4 +52,5 @@ def load_settings() -> Settings:
 
         # read timezone; default to "Asia/Singapore" if env var is not set
         timezone=os.getenv("APP_TIMEZONE", "Asia/Singapore"),
+        webhook_url=os.getenv("WEBHOOK_URL")
     )

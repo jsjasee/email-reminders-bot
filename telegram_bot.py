@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Dict, Any
 
 import telebot
+from telebot import types
 
 
 logger = logging.getLogger(__name__)
@@ -11,11 +12,11 @@ class TelegramBot:
     """
     Thin wrapper around telebot.TeleBot.
 
-    Externally it provides the SAME interface we used before:
+    Exposed interface:
       - send_message(chat_id, text, reply_markup=None)
       - is_allowed_user(update_dict)
-
-    Internally it uses telebot instead of raw requests.
+      - build_manual_offset_keyboard()
+      - answer_callback_query(callback_query_id, text=None, show_alert=False)
     """
 
     def __init__(self, token: str, allowed_user_id: Optional[int]):
@@ -23,14 +24,18 @@ class TelegramBot:
         # We won't use telebot's polling or decorator system; just its client.
         self.bot = telebot.TeleBot(token, parse_mode=None)
 
-    def send_message(self,chat_id: int,text: str,reply_markup: Optional[Any] = None,):
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: Optional[Any] = None,
+    ):
         """
         Send a message via Telegram.
 
         reply_markup can be:
           - None
-          - a telebot.types.ReplyKeyboardMarkup / InlineKeyboardMarkup, etc.
-        We don't need to care about its exact type here; telebot handles it.
+          - a telebot.types.InlineKeyboardMarkup, etc.
         """
         try:
             msg = self.bot.send_message(
@@ -38,7 +43,7 @@ class TelegramBot:
                 text=text,
                 reply_markup=reply_markup,
             )
-            return msg  # telebot Message object; caller currently doesn't use it
+            return msg  # telebot Message object
         except Exception:
             logger.exception("Error sending Telegram message")
             raise
@@ -63,3 +68,40 @@ class TelegramBot:
 
         # Other update types we don't recognise yet
         return False
+
+    # --------- Helpers for manual reminders --------- #
+
+    def build_manual_offset_keyboard(self) -> types.InlineKeyboardMarkup:
+        """
+        Inline keyboard with +1h / +1d / +3d / +1w for manual reminders.
+        callback_data uses 'manual_offset:<key>' format.
+        """
+        markup = types.InlineKeyboardMarkup()
+        buttons = [
+            types.InlineKeyboardButton("+1 hour", callback_data="manual_offset:1h"),
+            types.InlineKeyboardButton("+1 day", callback_data="manual_offset:1d"),
+            types.InlineKeyboardButton("+3 days", callback_data="manual_offset:3d"),
+            types.InlineKeyboardButton("+1 week", callback_data="manual_offset:1w"),
+        ]
+        markup.row(buttons[0], buttons[1])
+        markup.row(buttons[2], buttons[3])
+        return markup
+
+    def answer_callback_query(
+        self,
+        callback_query_id,
+        text: Optional[str] = None,
+        show_alert: bool = False,
+    ) -> None:
+        """
+        Wrap answerCallbackQuery so we can stop the 'loading' spinner and show a short message.
+        """
+        try:
+            # note the below is the answer_callback_query at the bot level, not the TelegramBot level, it's a different function
+            self.bot.answer_callback_query(
+                callback_query_id,
+                text=text,
+                show_alert=show_alert,
+            )
+        except Exception:
+            logger.exception("Error answering callback query")
