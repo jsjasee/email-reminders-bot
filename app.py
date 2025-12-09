@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 def create_app() -> Flask:
-    app = Flask(__name__)
+    app = Flask(__name__) # this is the flask app, storing routes, requests and configuration settings
+    # and also sending responses etc.
 
     # Load config once at startup
     settings: Settings = load_settings()
     app.config["SETTINGS"] = settings
 
-    # Initialise TelegramBot (may be None if token is missing)
+    # Initialise TelegramBot (maybe None if token is missing)
     telegram_bot = None
     if settings.telegram_bot_token:
         telegram_bot = TelegramBot(
@@ -31,7 +32,7 @@ def create_app() -> Flask:
         )
     app.config["TELEGRAM_BOT"] = telegram_bot
 
-    # Initialise Sheets repo (may be None if config missing / invalid)
+    # Initialise Sheets repo (maybe None if config missing / invalid)
     sheets_repo = None
     if settings.google_sheets_spreadsheet_id and settings.google_service_account_json:
         try:
@@ -154,10 +155,8 @@ def create_app() -> Flask:
                 500,
             )
 
-        settings: Settings = app.config["SETTINGS"]
-
         # Use the app timezone (Asia/Singapore by default)
-        tz = ZoneInfo(settings.timezone)
+        tz = ZoneInfo(app.config["SETTINGS"].timezone)
         now = datetime.now(tz)
         due_at = now + timedelta(minutes=5)
 
@@ -207,8 +206,7 @@ def create_app() -> Flask:
                 500,
             )
 
-        settings: Settings = app.config["SETTINGS"]
-        tz = ZoneInfo(settings.timezone)
+        tz = ZoneInfo(app.config["SETTINGS"].timezone)
         now = datetime.now(tz)
 
         try:
@@ -245,8 +243,8 @@ def create_app() -> Flask:
     return app
 
 
-app = create_app()
+module_level_app = create_app()
 
 if __name__ == "__main__":
-    # For local development only. On Render we'll use gunicorn.
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    # For local development only. On Render, we'll use gunicorn.
+    module_level_app.run(host="0.0.0.0", port=5001, debug=True)
