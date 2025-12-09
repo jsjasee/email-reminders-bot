@@ -105,3 +105,56 @@ class TelegramBot:
             )
         except Exception:
             logger.exception("Error answering callback query")
+
+    # --------- Helpers for email-based reminders --------- #
+
+    def build_email_action_keyboard(self, gmail_message_id: str) -> types.InlineKeyboardMarkup:
+        """
+        Inline keyboard for a 'New email' notification with:
+          - Set reminder
+          - Done
+
+        callback_data:
+          - email_action:set:<gmail_message_id>
+          - email_action:done:<gmail_message_id>
+        """
+        markup = types.InlineKeyboardMarkup()
+        btn_set = types.InlineKeyboardButton(
+            "Set reminder",
+            callback_data=f"email_action:set:{gmail_message_id}",
+        )
+        btn_done = types.InlineKeyboardButton(
+            "Done",
+            callback_data=f"email_action:done:{gmail_message_id}",
+        )
+        markup.row(btn_set, btn_done)
+        return markup
+
+    def build_email_offset_keyboard(self, gmail_message_id: str) -> types.InlineKeyboardMarkup:
+        """
+        Inline keyboard with +1h / +1d / +3d / +1w for email reminders.
+
+        callback_data:
+          - email_offset:<gmail_message_id>:1h
+          - email_offset:<gmail_message_id>:1d
+          - email_offset:<gmail_message_id>:3d
+          - email_offset:<gmail_message_id>:1w
+        """
+        markup = types.InlineKeyboardMarkup()
+        buttons = [
+            types.InlineKeyboardButton(
+                "+1 hour", callback_data=f"email_offset:{gmail_message_id}:1h"
+            ),
+            types.InlineKeyboardButton(
+                "+1 day", callback_data=f"email_offset:{gmail_message_id}:1d"
+            ),
+            types.InlineKeyboardButton(
+                "+3 days", callback_data=f"email_offset:{gmail_message_id}:3d"
+            ),
+            types.InlineKeyboardButton(
+                "+1 week", callback_data=f"email_offset:{gmail_message_id}:1w"
+            ),
+        ]
+        markup.row(buttons[0], buttons[1])
+        markup.row(buttons[2], buttons[3])
+        return markup

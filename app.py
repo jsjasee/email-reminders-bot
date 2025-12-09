@@ -279,7 +279,172 @@ def create_app() -> Flask:
 
                 return "", 200
 
-            # Other callback types (for email reminders etc.) will go here later.
+            # ------- email_action:... -> Set reminder / Done for email ------- #
+            if data.startswith("email_action:"):
+                # format: email_action:<action>:<gmail_message_id>
+                parts = data.split(":", 2)
+                if len(parts) != 3:
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Invalid email action.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                _, action, gmail_message_id = parts
+
+                if action == "set":
+                    # Show offset buttons for this email
+                    keyboard = bot.build_email_offset_keyboard(gmail_message_id)
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text="When should I remind you about this email?",
+                        reply_markup=keyboard,
+                    )
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Choose when to be reminded.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                if action == "done":
+                    # No reminder created, just acknowledge
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Marked as done. No reminder created.",
+                            show_alert=False,
+                        )
+                    # Optional confirmation message
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text="Okay, I won't create a reminder for this email.",
+                    )
+                    return "", 200
+
+                # Unknown email action
+                if callback_query_id:
+                    bot.answer_callback_query(
+                        callback_query_id,
+                        text="Unknown email action.",
+                        show_alert=False,
+                    )
+                return "", 200
+
+            # ------- email_offset:... -> create email-based reminder ------- #
+            if data.startswith("email_offset:"):
+                # format: email_offset:<gmail_message_id>:<key>
+                parts = data.split(":", 2)
+                if len(parts) != 3:
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Invalid email offset.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                _, gmail_message_id, offset_key = parts
+
+                if repo is None:
+                    logger.error("Sheets repo not configured; cannot create email reminder.")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Storage not configured.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                # Need Gmail client to fetch metadata
+                gmail_client = app.config.get("GMAIL_CLIENT")
+                if gmail_client is None:
+                    logger.error("Gmail client not configured; cannot create email reminder.")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Email access not configured.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                delta = offset_key_to_delta(offset_key)
+                if delta is None:
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Unknown offset.",
+                            show_alert=False,
+                        )
+                    return "", 200
+
+                tz = ZoneInfo(settings.timezone)
+                now = datetime.now(tz)
+                due_at = now + delta
+
+                try:
+                    meta = gmail_client.get_message_metadata(gmail_message_id)
+                except Exception:
+                    logger.exception("Error fetching Gmail metadata for email reminder.")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Failed to read email metadata.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                subject = meta.get("subject")
+                sender = meta.get("from")
+                recipient = meta.get("to")
+
+                reminder = Reminder(
+                    reminder_id=str(uuid.uuid4()),
+                    source_type="email",
+                    gmail_message_id=gmail_message_id,
+                    subject=subject,
+                    sender=sender,
+                    recipient=recipient,
+                    description=None,
+                    telegram_chat_id=settings.telegram_user_id or chat_id,
+                    due_at=due_at,
+                    status="pending",
+                )
+
+                try:
+                    repo.create_reminder(reminder)
+                except Exception:
+                    logger.exception("Error creating email reminder from callback")
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Failed to save reminder.",
+                            show_alert=True,
+                        )
+                    return "", 200
+
+                if callback_query_id:
+                    bot.answer_callback_query(
+                        callback_query_id,
+                        text="Email reminder created.",
+                        show_alert=False,
+                    )
+
+                summary_subject = subject or "(no subject)"
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"Reminder created for {due_at.isoformat()} "
+                        f"for email:\n{summary_subject}"
+                    ),
+                )
+
+                return "", 200
+
+            # Other callback types (for future flows) fall through
             return "", 200
 
         # For now, ignore other update types.
@@ -498,6 +663,97 @@ def create_app() -> Flask:
                 "ok": True,
                 "count": len(metadata_list),
                 "messages": metadata_list,
+            }
+        ), 200
+
+    @app.route("/test-email-notification", methods=["GET", "POST"])
+    def test_email_notification():
+        """
+        Dev-only endpoint:
+
+        - Takes the most recent INBOX email
+        - Fetches minimal metadata (From, Subject)
+        - Sends a Telegram message to the configured user with:
+            New email
+            From: ...
+            Subject: ...
+          plus Set reminder / Done buttons.
+
+        This simulates what the real /gmail-webhook will do later.
+        """
+        bot: TelegramBot | None = app.config.get("TELEGRAM_BOT")
+        gmail_client = app.config.get("GMAIL_CLIENT")
+        settings: Settings = app.config["SETTINGS"]
+
+        if bot is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Telegram bot not configured. Check TELEGRAM_BOT_TOKEN / TELEGRAM_USER_ID.",
+                    }
+                ),
+                500,
+            )
+
+        if gmail_client is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Gmail client not configured. Check GMAIL_OAUTH_TOKEN_JSON.",
+                    }
+                ),
+                500,
+            )
+
+        if settings.telegram_user_id is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "TELEGRAM_USER_ID not configured.",
+                    }
+                ),
+                500,
+            )
+
+        try:
+            # Get the most recent message in INBOX
+            message_ids = gmail_client.list_recent_message_ids(
+                max_results=1,
+                label_ids=["INBOX"],
+            )
+            if not message_ids:
+                return jsonify({"ok": False, "error": "No messages found in INBOX."}), 200
+
+            gmail_message_id = message_ids[0]
+            meta = gmail_client.get_message_metadata(gmail_message_id)
+        except Exception as e:
+            logger.exception("Error fetching recent Gmail message for test notification")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        from_header = meta.get("from") or "(unknown sender)"
+        subject = meta.get("subject") or "(no subject)"
+
+        text = f"New email\nFrom: {from_header}\nSubject: {subject}"
+
+        keyboard = bot.build_email_action_keyboard(gmail_message_id)
+
+        try:
+            bot.send_message(
+                chat_id=settings.telegram_user_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.exception("Error sending test email notification to Telegram")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        return jsonify(
+            {
+                "ok": True,
+                "gmail_message_id": gmail_message_id,
             }
         ), 200
 
