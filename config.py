@@ -24,6 +24,7 @@ class Settings:
     # General
     timezone: str
     webhook_url: str
+    target_sender_email: str
 
 def load_settings() -> Settings:
     telegram_user_id_raw = os.getenv("TELEGRAM_USER_ID")
@@ -41,4 +42,5 @@ def load_settings() -> Settings:
 
         timezone=os.getenv("APP_TIMEZONE", "Asia/Singapore"),
         webhook_url=os.getenv("WEBHOOK_URL"),
+        target_sender_email=os.getenv("TARGET_SENDER_EMAIL")
     )

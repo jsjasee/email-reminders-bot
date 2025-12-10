@@ -1020,6 +1020,46 @@ def create_app() -> Flask:
             app.config["LAST_HISTORY_ID"] = latest_history_id
             logger.info("Updated LAST_HISTORY_ID to %s", latest_history_id)
 
+        # ---- NEW: fetch metadata + filter by sender email ---- #
+        matched_messages: list[dict[str, Any]] = []
+
+        for msg_id in new_message_ids:
+            try:
+                meta = gmail_client.get_message_metadata(msg_id)
+            except Exception:
+                logger.exception(
+                    "Failed to fetch metadata for Gmail message_id=%s in /gmail-webhook",
+                    msg_id,
+                )
+                continue
+
+            from_header = meta.get("from") or ""
+            subject = meta.get("subject") or "(no subject)"
+
+            # Normalise for case-insensitive substring match
+            if settings.target_sender_email.lower() in from_header.lower():
+                logger.info(
+                    "Matched target sender %s for message_id=%s: from=%r, subject=%r",
+                    settings.target_sender_email,
+                    msg_id,
+                    from_header,
+                    subject,
+                )
+                matched_messages.append(
+                    {
+                        "gmail_message_id": msg_id,
+                        "from": from_header,
+                        "subject": subject,
+                    }
+                )
+            else:
+                logger.info(
+                    "Ignoring message_id=%s: sender %r does not match %s",
+                    msg_id,
+                    from_header,
+                    settings.target_sender_email,
+                )
+
         # For now, just report what we saw; no Telegram yet.
         return jsonify(
             {
@@ -1031,6 +1071,7 @@ def create_app() -> Flask:
                 "new_message_ids": new_message_ids,
                 "latest_history_id": latest_history_id,
                 "last_history_id_after": app.config.get("LAST_HISTORY_ID"),
+                "matched_messages": matched_messages,
             }
         ), 200
 
