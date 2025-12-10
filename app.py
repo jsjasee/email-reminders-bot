@@ -939,6 +939,9 @@ def create_app() -> Flask:
         NOTE: No Telegram sends, no sender filter yet.
         """
         gmail_client: GmailClient | None = app.config.get("GMAIL_CLIENT")
+        bot: TelegramBot | None = app.config.get("TELEGRAM_BOT")
+        settings: Settings = app.config["SETTINGS"]
+
         if gmail_client is None:
             logger.error("Gmail client not configured; cannot process Gmail webhook.")
             return jsonify({"ok": False, "error": "gmail_client_not_configured"}), 200
@@ -1060,7 +1063,43 @@ def create_app() -> Flask:
                     settings.target_sender_email,
                 )
 
-        # For now, just report what we saw; no Telegram yet.
+        # ---- NEW: send Telegram cards for matched messages ---- #
+        telegram_dispatched = 0
+
+        if bot is None:
+            logger.warning(
+                "Telegram bot not configured; cannot send notifications for matched messages."
+            )
+        elif settings.telegram_user_id is None:
+            logger.warning(
+                "TELEGRAM_USER_ID not configured; cannot send notifications for matched messages."
+            )
+        else:
+            for mm in matched_messages:
+                gmail_message_id = mm["gmail_message_id"]
+                from_header = mm["from"] or "(unknown sender)"
+                subject = mm["subject"] or "(no subject)"
+
+                text = f"New email\nFrom: {from_header}\nSubject: {subject}"
+                keyboard = bot.build_email_action_keyboard(gmail_message_id)
+
+                try:
+                    bot.send_message(
+                        chat_id=settings.telegram_user_id,
+                        text=text,
+                        reply_markup=keyboard,
+                    )
+                    telegram_dispatched += 1
+                    logger.info(
+                        "Sent Telegram notification for Gmail message_id=%s",
+                        gmail_message_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send Telegram notification for Gmail message_id=%s",
+                        gmail_message_id,
+                    )
+        # Return a simple json
         return jsonify(
             {
                 "ok": True,
@@ -1072,6 +1111,7 @@ def create_app() -> Flask:
                 "latest_history_id": latest_history_id,
                 "last_history_id_after": app.config.get("LAST_HISTORY_ID"),
                 "matched_messages": matched_messages,
+                "telegram_dispatched": telegram_dispatched,
             }
         ), 200
 
