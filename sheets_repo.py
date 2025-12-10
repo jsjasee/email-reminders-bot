@@ -340,7 +340,9 @@ class ReminderSheetRepository:
         # Look for existing row with same key
         for idx, row in enumerate(values[1:], start=2):  # row index from 2 (after header)
             if row and row[0] == key:
-                ws.update(range_name=f"B{idx}", values=[[value]])
+                ws.update(range_name=f"B{idx}", values=[[value]]) # the values to be written in the cell must be stored in a list! or you can use the method below
+                # OPTION 2: use update_cell (simplest)
+                # ws.update_cell(idx, 2, value) -> row, column, value
                 return
 
         # Not found: append a new row
