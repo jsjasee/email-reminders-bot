@@ -1,5 +1,7 @@
 import logging
 import uuid
+import base64  # for decoding Pub/Sub data field
+import json
 
 from flask import Flask, jsonify, request
 
@@ -958,6 +960,70 @@ def create_app() -> Flask:
             {
                 "ok": True,
                 "gmail_message_id": gmail_message_id,
+            }
+        ), 200
+
+    @app.route("/gmail-webhook", methods=["POST"])
+    def gmail_webhook():
+        """
+        Gmail Pub/Sub push endpoint.
+
+        Gmail -> Pub/Sub -> this HTTP endpoint.
+        """
+
+        # Outer JSON from Pub/Sub (the "envelope")
+        envelope = request.get_json(silent=True) or {}
+        logger.info("Received Pub/Sub envelope: %s", envelope)
+
+        # Pub/Sub message object inside the envelope
+        message = envelope.get("message") or {}
+
+        # Base64-encoded JSON string from Gmail (inside "data")
+        data_b64 = message.get("data")
+
+        if not data_b64:
+            # Pub/Sub may send test / bad messages without "data"
+            logger.warning("Pub/Sub message missing 'data'; ignoring.")
+            return jsonify({"ok": True, "ignored": True, "reason": "no data"}), 200
+
+        try:
+            # 1) base64 -> raw bytes
+            payload_bytes = base64.b64decode(data_b64)
+            # 2) bytes -> string
+            payload_str = payload_bytes.decode("utf-8")
+            # 3) string (JSON) -> Python dict
+            gmail_notification = json.loads(payload_str)
+        except Exception:
+            # Log full stack trace if decoding/parsing fails
+            logger.exception("Failed to decode/parse Gmail Pub/Sub data")
+            # Still return 200 so Pub/Sub doesn't keep retrying forever
+            return jsonify({"ok": False, "error": "decode_failed"}), 200
+
+        # Inner Gmail notification fields
+        # Example: {"emailAddress": "...", "historyId": "1234567890"}
+        email_address = gmail_notification.get("emailAddress")
+        history_id = gmail_notification.get("historyId")
+
+        # Log what Gmail told us (which inbox, which history checkpoint)
+        logger.info(
+            "Gmail push notification: emailAddress=%s, historyId=%s",
+            email_address,
+            history_id,
+        )
+
+        # LATER (not implemented here yet):
+        # - Read last_history_id from storage (e.g. Sheets)
+        # - Use Gmail History API to list changes since last_history_id
+        # - For each new message, fetch metadata + filter by From:
+        # - Send Telegram "New email" notification
+        # - Update stored history_id to this new value
+
+        # Simple JSON response for debugging / monitoring
+        return jsonify(
+            {
+                "ok": True,
+                "emailAddress": email_address,
+                "historyId": history_id,
             }
         ), 200
 
