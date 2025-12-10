@@ -661,40 +661,6 @@ def create_app() -> Flask:
         # For now, ignore other update types.
         return "", 200
 
-    @app.route("/test-sheets", methods=["POST", "GET"])
-    def test_sheets():
-        """
-        Simple connectivity test:
-        - Append a dummy row
-        - Return total rows and last row
-        """
-        repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
-        if repo is None:
-            return (
-                jsonify(
-                    {
-                        "ok": False,
-                        "error": "Sheets repo not configured. Check GOOGLE_SHEETS_SPREADSHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON.",
-                    }
-                ),
-                500,
-            )
-
-        try:
-            repo.append_test_row("test from /test-sheets")
-            values = repo.get_all_values()
-            last_row = values[-1] if values else None
-            return jsonify(
-                {
-                    "ok": True,
-                    "total_rows": len(values),
-                    "last_row": last_row,
-                }
-            )
-        except Exception as e:
-            logger.exception("Error during /test-sheets")
-            return jsonify({"ok": False, "error": str(e)}), 500
-
     @app.route("/test-create-reminder", methods=["POST"])
     def test_create_reminder():
         """
@@ -800,79 +766,6 @@ def create_app() -> Flask:
                 "due_reminders": [serialize(r) for r in due_reminders],
             }
         )
-
-    @app.route("/test-gmail-labels", methods=["GET"])
-    def test_gmail_labels():
-        """
-        Dev-only endpoint to verify Gmail OAuth is working.
-
-        Returns the list of labels for the authorised Gmail account.
-        """
-        if app.config.get("GMAIL_CLIENT") is None:
-            return (
-                jsonify(
-                    {
-                        "ok": False,
-                        "error": "Gmail client not configured. Check GMAIL_OAUTH_TOKEN_JSON.",
-                    }
-                ),
-                500,
-            )
-
-        try:
-            labels = gmail_client.list_labels()
-        except Exception as e:
-            logger.exception("Error during /test-gmail-labels")
-            return jsonify({"ok": False, "error": str(e)}), 500
-
-        return jsonify(
-            {
-                "ok": True,
-                "count": len(labels),
-                "labels": [
-                    {"id": lbl.get("id"), "name": lbl.get("name")} for lbl in labels
-                ],
-            }
-        ), 200
-
-    @app.route("/test-gmail-recent", methods=["GET"])
-    def test_gmail_recent():
-        """
-        Dev-only endpoint to fetch a few recent emails and show minimal metadata.
-        This proves we can read messages without touching bodies/attachments.
-        """
-
-        if app.config.get("GMAIL_CLIENT") is None:
-            return (
-                jsonify(
-                    {
-                        "ok": False,
-                        "error": "Gmail client not configured. Check GMAIL_OAUTH_TOKEN_JSON.",
-                    }
-                ),
-                500,
-            )
-
-        try:
-            # Get up to 5 most recent messages from the INBOX
-            message_ids = gmail_client.list_recent_message_ids(
-                max_results=5,
-                label_ids=["INBOX"],
-            )
-            metadata_list = [
-                gmail_client.get_message_metadata(mid) for mid in message_ids
-            ]
-        except Exception as e:
-            logger.exception("Error during /test-gmail-recent")
-            return jsonify({"ok": False, "error": str(e)}), 500
-
-        return jsonify(
-            {
-                "ok": True,
-                "count": len(metadata_list),
-                "messages": metadata_list,
-            }
-        ), 200
 
     @app.route("/test-email-notification", methods=["GET", "POST"])
     def test_email_notification():
