@@ -89,12 +89,14 @@ def create_app() -> Flask:
         """
         Telegram webhook handler.
 
-        Current behaviour:
+        Behaviour:
         - Enforces single-user rule.
         - /start: simple welcome message.
         - /new: ask for reminder description.
         - Next plain-text message after /new: treat as description, show offset buttons.
-        - Button press (manual_offset:...): create manual reminder in Sheets.
+        - Button press (manual_offset:...): create manual reminder in Sheets and edit message.
+        - Email notification actions and reminder control buttons also edit the original message
+          and remove keyboards so buttons cannot be spammed indefinitely.
         """
         bot: TelegramBot | None = app.config.get("TELEGRAM_BOT")
         if bot is None:
@@ -190,14 +192,19 @@ def create_app() -> Flask:
             message = callback_query.get("message") or {}
             chat = message.get("chat") or {}
             chat_id = chat.get("id")
+            message_id = message.get("message_id")
             callback_query_id = callback_query.get("id")
 
             if chat_id is None:
                 if callback_query_id:
-                    bot.answer_callback_query(callback_query_id, text="No chat id", show_alert=False)
+                    bot.answer_callback_query(
+                        callback_query_id,
+                        text="No chat id",
+                        show_alert=False,
+                    )
                 return "", 200
 
-            # manual_offset:... -> create manual reminder
+            # ------- manual_offset:... -> create manual reminder ------- #
             if data.startswith("manual_offset:"):
                 if repo is None:
                     logger.error("Sheets repo not configured; cannot create manual reminder.")
@@ -251,7 +258,7 @@ def create_app() -> Flask:
 
                 try:
                     repo.create_reminder(reminder)
-                except Exception as e:
+                except Exception:
                     logger.exception("Error creating manual reminder from callback")
                     if callback_query_id:
                         bot.answer_callback_query(
@@ -264,7 +271,7 @@ def create_app() -> Flask:
                 # Clear state
                 manual_new_state.pop(chat_id, None)
 
-                # Stop spinner & confirm
+                # Stop spinner
                 if callback_query_id:
                     bot.answer_callback_query(
                         callback_query_id,
@@ -272,10 +279,23 @@ def create_app() -> Flask:
                         show_alert=False,
                     )
 
-                bot.send_message(
-                    chat_id=chat_id,
-                    text=f"Reminder created for {due_at.isoformat()}:\n{description}",
+                confirmation_text = (
+                    f"✅ Reminder created for {due_at.isoformat()}:\n{description}"
                 )
+
+                # Prefer editing the original keyboard message; fall back to new message
+                if message_id is not None:
+                    bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=confirmation_text,
+                        reply_markup=None,  # remove keyboard
+                    )
+                else:
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=confirmation_text,
+                    )
 
                 return "", 200
 
@@ -295,34 +315,58 @@ def create_app() -> Flask:
                 _, action, gmail_message_id = parts
 
                 if action == "set":
-                    # Show offset buttons for this email
+                    # Replace the Set/Done keyboard with the offset keyboard on the same message
                     keyboard = bot.build_email_offset_keyboard(gmail_message_id)
-                    bot.send_message(
-                        chat_id=chat_id,
-                        text="When should I remind you about this email?",
-                        reply_markup=keyboard,
-                    )
+
                     if callback_query_id:
                         bot.answer_callback_query(
                             callback_query_id,
                             text="Choose when to be reminded.",
                             show_alert=False,
                         )
+
+                    base_text = message.get("text") or "New email"
+                    new_text = base_text + "\n\nWhen should I remind you about this email?"
+
+                    if message_id is not None:
+                        bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=new_text,
+                            reply_markup=keyboard,  # new keyboard
+                        )
+                    else:
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="When should I remind you about this email?",
+                            reply_markup=keyboard,
+                        )
                     return "", 200
 
                 if action == "done":
-                    # No reminder created, just acknowledge
+                    # No reminder created, just acknowledge + update card
                     if callback_query_id:
                         bot.answer_callback_query(
                             callback_query_id,
                             text="Marked as done. No reminder created.",
                             show_alert=False,
                         )
-                    # Optional confirmation message
-                    bot.send_message(
-                        chat_id=chat_id,
-                        text="Okay, I won't create a reminder for this email.",
-                    )
+
+                    base_text = message.get("text") or "New email"
+                    new_text = base_text + "\n\n✅ Marked as done. No reminder created."
+
+                    if message_id is not None:
+                        bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=new_text,
+                            reply_markup=None,  # remove keyboard
+                        )
+                    else:
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Okay, I won't create a reminder for this email.",
+                        )
                     return "", 200
 
                 # Unknown email action
@@ -433,14 +477,29 @@ def create_app() -> Flask:
                         show_alert=False,
                     )
 
+                base_text = message.get("text") or ""
                 summary_subject = subject or "(no subject)"
-                bot.send_message(
-                    chat_id=chat_id,
-                    text=(
+
+                if base_text:
+                    new_text = base_text + f"\n\n✅ Reminder created for {due_at.isoformat()}."
+                else:
+                    new_text = (
                         f"Reminder created for {due_at.isoformat()} "
                         f"for email:\n{summary_subject}"
-                    ),
-                )
+                    )
+
+                if message_id is not None:
+                    bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=new_text,
+                        reply_markup=None,  # remove keyboard
+                    )
+                else:
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=new_text,
+                    )
 
                 return "", 200
 
@@ -511,10 +570,21 @@ def create_app() -> Flask:
                         show_alert=False,
                     )
 
-                bot.send_message(
-                    chat_id=chat_id,
-                    text=f"Reminder snoozed to {new_due_at.isoformat()}.",
-                )
+                base_text = message.get("text") or "Reminder"
+                new_text = base_text + f"\n\n⏰ Snoozed to {new_due_at.isoformat()}."
+
+                if message_id is not None:
+                    bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=new_text,
+                        reply_markup=None,  # remove keyboard after one snooze
+                    )
+                else:
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=f"Reminder snoozed to {new_due_at.isoformat()}.",
+                    )
 
                 return "", 200
 
@@ -562,7 +632,20 @@ def create_app() -> Flask:
                         show_alert=False,
                     )
 
-                if deleted:
+                if not deleted:
+                    return "", 200
+
+                base_text = message.get("text") or "Reminder"
+                new_text = base_text + "\n\n✅ Reminder marked as complete and removed."
+
+                if message_id is not None:
+                    bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=new_text,
+                        reply_markup=None,  # remove keyboard
+                    )
+                else:
                     bot.send_message(
                         chat_id=chat_id,
                         text="Reminder marked as complete and removed.",
@@ -723,8 +806,7 @@ def create_app() -> Flask:
 
         Returns the list of labels for the authorised Gmail account.
         """
-        gmail_client: GmailClient | None = app.config.get("GMAIL_CLIENT")
-        if gmail_client is None:
+        if app.config.get("GMAIL_CLIENT") is None:
             return (
                 jsonify(
                     {
@@ -757,10 +839,8 @@ def create_app() -> Flask:
         Dev-only endpoint to fetch a few recent emails and show minimal metadata.
         This proves we can read messages without touching bodies/attachments.
         """
-        from gmail_client import GmailClient  # avoid circular type issues
 
-        gmail_client: GmailClient | None = app.config.get("GMAIL_CLIENT")
-        if gmail_client is None:
+        if app.config.get("GMAIL_CLIENT") is None:
             return (
                 jsonify(
                     {
@@ -808,8 +888,6 @@ def create_app() -> Flask:
         This simulates what the real /gmail-webhook will do later.
         """
         bot: TelegramBot | None = app.config.get("TELEGRAM_BOT")
-        gmail_client = app.config.get("GMAIL_CLIENT")
-        settings: Settings = app.config["SETTINGS"]
 
         if bot is None:
             return (
@@ -822,7 +900,7 @@ def create_app() -> Flask:
                 500,
             )
 
-        if gmail_client is None:
+        if app.config.get("GMAIL_CLIENT") is None:
             return (
                 jsonify(
                     {
@@ -833,7 +911,7 @@ def create_app() -> Flask:
                 500,
             )
 
-        if settings.telegram_user_id is None:
+        if app.config["SETTINGS"].telegram_user_id is None:
             return (
                 jsonify(
                     {
@@ -899,7 +977,6 @@ def create_app() -> Flask:
         """
         bot: TelegramBot | None = app.config.get("TELEGRAM_BOT")
         repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
-        settings: Settings = app.config["SETTINGS"]
 
         if bot is None:
             return (

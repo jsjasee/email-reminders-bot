@@ -48,6 +48,24 @@ class TelegramBot:
             logger.exception("Error sending Telegram message")
             raise
 
+    def edit_message_text(self,chat_id: int,message_id: int,text: str,reply_markup: Any | None = None,) -> None:
+        """
+        Edit an existing Telegram message (and optionally replace/remove its keyboard).
+        """
+        try:
+            self.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+        except Exception:
+            logger.exception(
+                "Error editing Telegram message chat_id=%s message_id=%s",
+                chat_id,
+                message_id,
+            )
+
     def is_allowed_user(self, update: Dict[str, Any]) -> bool:
         """
         Only allow messages / callbacks from the single configured user.
@@ -105,19 +123,6 @@ class TelegramBot:
             )
         except Exception:
             logger.exception("Error answering callback query")
-
-    def delete_message(self, chat_id: int, message_id: int) -> None:
-        """
-        Delete a message in a chat. Used to prevent repeated button presses.
-        """
-        try:
-            self.bot.delete_message(chat_id, message_id)
-        except Exception:
-            logger.exception(
-                "Error deleting Telegram message chat_id=%s message_id=%s",
-                chat_id,
-                message_id,
-            )
 
     # --------- Helpers for email-based reminders --------- #
 
