@@ -38,6 +38,27 @@ class GmailClient:
             credentials=creds,
             cache_discovery=False,
         )
+        self.topic_name = "projects/email-reminders-bot/topics/gmail-push-topic"
+
+    def setup_watch(self) -> dict:
+        """
+        Start Gmail watch on the mailbox.
+        Returns the raw watch response (includes historyId).
+        """
+        body = {
+            "topicName": self.topic_name,
+            # You can add filters later if you want:
+            # "labelIds": ["INBOX"],
+            # "labelFilterAction": "include",
+        }
+
+        resp = (
+            self.service.users()
+            .watch(userId="me", body=body)
+            .execute()
+        )
+        # Example resp: {"historyId": "1234567890", "expiration": 1700000000000}
+        return resp
 
     def list_labels(self) -> List[Dict[str, Any]]:
         """Return the list of labels for the authorised user."""
@@ -117,3 +138,89 @@ class GmailClient:
             "internal_date": resp.get("internalDate"),
             "label_ids": resp.get("labelIds", []),
         }
+
+    def list_new_message_ids_since(
+            self,
+            start_history_id: str | None,
+            label_ids: list[str] | None = None,
+    ) -> tuple[list[str], str | None]:
+        """
+        Return (message_ids, latest_history_id) based on Gmail history.
+
+        - start_history_id: last processed historyId as a string, or None.
+        - label_ids: optional list of label IDs to filter on (defaults to ['INBOX']).
+
+        message_ids:
+            Unique Gmail message IDs for messages added since start_history_id
+            that have at least one of the given labels.
+
+        latest_history_id:
+            The latest historyId observed in this call. Persist this and use
+            it as start_history_id next time.
+        """
+        if label_ids is None:
+            label_ids = ["INBOX"]
+
+        # If we have no starting history, caller should decide what to do.
+        if start_history_id is None:
+            return [], None
+
+        user_id = "me"
+        all_message_ids: set[str] = set()
+        latest_history_id: str | None = None
+
+        try:
+            # NOTE: no labelId here; we filter by labels ourselves below
+            request = (
+                self.service.users()
+                .history()
+                .list(
+                    userId=user_id,
+                    startHistoryId=start_history_id,
+                    historyTypes=["messageAdded"],
+                )
+            )
+
+            while request is not None:
+                response = request.execute()
+
+                # Collect history records
+                for history_record in response.get("history", []):
+                    # Per-record history id
+                    latest_history_id = history_record.get("id", latest_history_id)
+
+                    for msg_added in history_record.get("messagesAdded", []):
+                        msg = msg_added.get("message", {})
+                        msg_id = msg.get("id")
+                        if not msg_id:
+                            continue
+
+                        msg_labels = set(msg.get("labelIds", []))
+                        if msg_labels.intersection(label_ids):
+                            all_message_ids.add(msg_id)
+
+                # Top-level historyId reflects the last record in the range
+                if response.get("historyId"):
+                    latest_history_id = response["historyId"]
+
+                page_token = response.get("nextPageToken")
+                if page_token:
+                    request = (
+                        self.service.users()
+                        .history()
+                        .list(
+                            userId=user_id,
+                            startHistoryId=start_history_id,
+                            historyTypes=["messageAdded"],
+                            pageToken=page_token,
+                        )
+                    )
+                else:
+                    request = None
+
+        except HttpError as e:
+            print(f"Gmail API error in list_new_message_ids_since: {e}")
+            # Let caller decide how to reset; keep start_history_id as "latest"
+            return [], start_history_id
+
+        return sorted(all_message_ids), latest_history_id

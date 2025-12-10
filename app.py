@@ -71,6 +71,9 @@ def create_app() -> Flask:
 
     app.config["GMAIL_CLIENT"] = gmail_client
 
+    # In-memory last processed Gmail historyId (dev only; will later move to Sheets/config)
+    app.config["LAST_HISTORY_ID"] = None
+
     @app.route("/", methods=["GET"])
     def index():
         return "Email → Telegram reminder bot is running", 200
@@ -856,67 +859,178 @@ def create_app() -> Flask:
             }
         ), 200
 
+    @app.route("/debug/setup-gmail-watch", methods=["POST"])
+    def debug_setup_gmail_watch():
+        resp = app.config["GMAIL_CLIENT"].setup_watch()
+        return jsonify(
+            {
+                "ok": True,
+                "watch_response": resp,
+            }
+        ), 200
+
+    @app.route("/test-gmail-history", methods=["GET"])
+    def test_gmail_history():
+        """
+        Dev-only endpoint to inspect Gmail history.
+
+        Usage example:
+          curl "http://localhost:5001/test-gmail-history?start_history_id=1234567890"
+
+        Returns:
+          - start_history_id (what you passed in)
+          - new_message_ids (list of Gmail message IDs)
+          - latest_history_id (what you should persist next time)
+        """
+        if app.config.get("GMAIL_CLIENT") is None:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Gmail client not configured. Check GMAIL_OAUTH_TOKEN_JSON.",
+                    }
+                ),
+                500,
+            )
+
+        start_history_id = request.args.get("start_history_id")
+        if not start_history_id:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Missing start_history_id query param.",
+                    }
+                ),
+                400,
+            )
+
+        try:
+            message_ids, latest_history_id = gmail_client.list_new_message_ids_since(
+                start_history_id=start_history_id,
+            )
+        except Exception as e:
+            logger.exception("Error during /test-gmail-history")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        return jsonify(
+            {
+                "ok": True,
+                "start_history_id": start_history_id,
+                "new_message_ids": message_ids,
+                "latest_history_id": latest_history_id,
+            }
+        ), 200
+
     @app.route("/gmail-webhook", methods=["POST"])
     def gmail_webhook():
         """
         Gmail Pub/Sub push endpoint.
 
-        Gmail -> Pub/Sub -> this HTTP endpoint.
-        """
+        Step 1 behaviour (this step):
+          - Decode Pub/Sub envelope
+          - Extract emailAddress + historyId
+          - Use LAST_HISTORY_ID from app.config:
+              * If None -> bootstrap: set LAST_HISTORY_ID = historyId, do nothing else.
+              * Else    -> call Gmail history API for changes since LAST_HISTORY_ID,
+                           log new message IDs, then update LAST_HISTORY_ID.
+          - Always return 200 so Pub/Sub doesn’t retry.
 
-        # Outer JSON from Pub/Sub (the "envelope")
+        NOTE: No Telegram sends, no sender filter yet.
+        """
+        gmail_client: GmailClient | None = app.config.get("GMAIL_CLIENT")
+        if gmail_client is None:
+            logger.error("Gmail client not configured; cannot process Gmail webhook.")
+            return jsonify({"ok": False, "error": "gmail_client_not_configured"}), 200
+
         envelope = request.get_json(silent=True) or {}
         logger.info("Received Pub/Sub envelope: %s", envelope)
 
-        # Pub/Sub message object inside the envelope
         message = envelope.get("message") or {}
-
-        # Base64-encoded JSON string from Gmail (inside "data")
         data_b64 = message.get("data")
 
         if not data_b64:
-            # Pub/Sub may send test / bad messages without "data"
             logger.warning("Pub/Sub message missing 'data'; ignoring.")
             return jsonify({"ok": True, "ignored": True, "reason": "no data"}), 200
 
+        # Decode inner Gmail notification
         try:
-            # 1) base64 -> raw bytes
             payload_bytes = base64.b64decode(data_b64)
-            # 2) bytes -> string
             payload_str = payload_bytes.decode("utf-8")
-            # 3) string (JSON) -> Python dict
             gmail_notification = json.loads(payload_str)
         except Exception:
-            # Log full stack trace if decoding/parsing fails
             logger.exception("Failed to decode/parse Gmail Pub/Sub data")
-            # Still return 200 so Pub/Sub doesn't keep retrying forever
             return jsonify({"ok": False, "error": "decode_failed"}), 200
 
-        # Inner Gmail notification fields
-        # Example: {"emailAddress": "...", "historyId": "1234567890"}
         email_address = gmail_notification.get("emailAddress")
         history_id = gmail_notification.get("historyId")
 
-        # Log what Gmail told us (which inbox, which history checkpoint)
         logger.info(
             "Gmail push notification: emailAddress=%s, historyId=%s",
             email_address,
             history_id,
         )
 
-        # LATER (not implemented here yet):
-        # - Read last_history_id from storage (e.g. Sheets)
-        # - Use Gmail History API to list changes since last_history_id
-        # - For each new message, fetch metadata + filter by From:
-        # - Send Telegram "New email" notification
-        # - Update stored history_id to this new value
+        # In-memory last processed historyId
+        last_history_id = app.config.get("LAST_HISTORY_ID")
 
-        # Simple JSON response for debugging / monitoring
+        # 1) First time: bootstrap LAST_HISTORY_ID, do not call history.list yet
+        if last_history_id is None:
+            app.config["LAST_HISTORY_ID"] = history_id
+            logger.info(
+                "Bootstrapping LAST_HISTORY_ID to %s (no history processed this time).",
+                history_id,
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "mode": "bootstrap",
+                    "emailAddress": email_address,
+                    "historyId": history_id,
+                }
+            ), 200
+
+        # 2) Subsequent calls: list new messages since last_history_id
+        try:
+            new_message_ids, latest_history_id = gmail_client.list_new_message_ids_since(
+                start_history_id=str(last_history_id),
+                # keep default label_ids=["INBOX"] inside the method
+            )
+        except Exception as e:
+            logger.exception("Error while listing Gmail history in /gmail-webhook")
+            # Do NOT change LAST_HISTORY_ID on error.
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": str(e),
+                    "emailAddress": email_address,
+                    "historyId": history_id,
+                }
+            ), 200
+
+        logger.info(
+            "History diff: last_history_id=%s, new_message_ids=%s, latest_history_id=%s",
+            last_history_id,
+            new_message_ids,
+            latest_history_id,
+        )
+
+        # Update LAST_HISTORY_ID if we got a newer one
+        if latest_history_id is not None and latest_history_id != last_history_id:
+            app.config["LAST_HISTORY_ID"] = latest_history_id
+            logger.info("Updated LAST_HISTORY_ID to %s", latest_history_id)
+
+        # For now, just report what we saw; no Telegram yet.
         return jsonify(
             {
                 "ok": True,
+                "mode": "history",
                 "emailAddress": email_address,
-                "historyId": history_id,
+                "push_historyId": history_id,
+                "last_history_id_before": last_history_id,
+                "new_message_ids": new_message_ids,
+                "latest_history_id": latest_history_id,
+                "last_history_id_after": app.config.get("LAST_HISTORY_ID"),
             }
         ), 200
 
