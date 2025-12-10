@@ -27,6 +27,8 @@ REMINDER_HEADERS = [
     "status",             # "pending" etc.
 ]
 
+CONFIG_SHEET_NAME = "Config"
+CONFIG_HEADERS = ["key", "value"]
 
 @dataclass
 class Reminder:
@@ -72,6 +74,9 @@ class ReminderSheetRepository:
             logger.info("Worksheet '%s' not found, creating it.", worksheet_name)
             worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=20)
 
+        # Keep references so we can access other worksheets (e.g. Config)
+        self.client = client
+        self.spreadsheet = spreadsheet
         self.worksheet = worksheet
 
         # Ensure header row is present and correct
@@ -94,7 +99,7 @@ class ReminderSheetRepository:
         if first_row != REMINDER_HEADERS:
             logger.warning("First row does not match expected headers, overwriting it.")
             # Overwrite row 1 with our headers
-            self.worksheet.update("1:1", [REMINDER_HEADERS])
+            self.worksheet.update(range_name="1:1", values=[REMINDER_HEADERS])
 
     # --------- TEST METHODS (still useful) --------- #
 
@@ -262,3 +267,81 @@ class ReminderSheetRepository:
                 )
                 return True
         return False
+
+    # --------- CONFIG SHEET API (for things like last_history_id) --------- #
+
+    def _get_or_create_config_worksheet(self):
+        """
+        Ensure there is a 'Config' worksheet with header row ['key', 'value'].
+        Return the gspread worksheet object.
+        """
+        try:
+            ws = self.spreadsheet.worksheet(CONFIG_SHEET_NAME)
+        except gspread.WorksheetNotFound:
+            logger.info("Config worksheet '%s' not found, creating it.", CONFIG_SHEET_NAME)
+            ws = self.spreadsheet.add_worksheet(title=CONFIG_SHEET_NAME, rows=50, cols=2)
+            ws.update(range_name="A1:B1", values=[CONFIG_HEADERS])
+            return ws
+
+        # Ensure header row is present and correct
+        values = ws.get_all_values()
+        if not values:
+            logger.info("Config worksheet is empty, writing header row.")
+            ws.update(range_name="A1:B1", values=[CONFIG_HEADERS])
+        else:
+            first_row = values[0]
+            if first_row != CONFIG_HEADERS:
+                logger.warning(
+                    "Config first row does not match expected headers, overwriting it."
+                )
+                ws.update(range_name="1:1", values=[CONFIG_HEADERS])
+
+        return ws
+
+    def read_config_value(self, key: str) -> Optional[str]:
+        """
+        Read a value from the Config sheet by key.
+
+        Returns:
+          - value string if found
+          - None if not found or on error
+        """
+        try:
+            ws = self._get_or_create_config_worksheet()
+            values = ws.get_all_values()
+        except Exception:
+            logger.exception("Unable to read config key=%r from Config sheet.", key)
+            return None
+
+        # Skip header row
+        for row in values[1:]:
+            if len(row) < 2:
+                continue
+            row_key, row_value = row[0], row[1]
+            if row_key == key and row_value:
+                return row_value
+
+        return None
+
+    def write_config_value(self, key: str, value: str) -> None:
+        """
+        Upsert a key/value pair in the Config sheet.
+
+        - If key exists, update its value.
+        - Else append a new row.
+        """
+        try:
+            ws = self._get_or_create_config_worksheet()
+            values = ws.get_all_values()
+        except Exception:
+            logger.exception("Unable to write config key=%r to Config sheet.", key)
+            return
+
+        # Look for existing row with same key
+        for idx, row in enumerate(values[1:], start=2):  # row index from 2 (after header)
+            if row and row[0] == key:
+                ws.update(range_name=f"B{idx}", values=[[value]])
+                return
+
+        # Not found: append a new row
+        ws.append_row([key, value])

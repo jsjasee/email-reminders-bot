@@ -71,8 +71,18 @@ def create_app() -> Flask:
 
     app.config["GMAIL_CLIENT"] = gmail_client
 
-    # In-memory last processed Gmail historyId (dev only; will later move to Sheets/config)
-    app.config["LAST_HISTORY_ID"] = None
+    # Try to load persisted Gmail historyId from Sheets Config via ReminderSheetRepository
+    last_history_id: Optional[str] = None
+    if gmail_client is not None and sheets_repo is not None:
+        last_history_id = sheets_repo.read_config_value("last_history_id")
+        if last_history_id:
+            logger.info("Loaded last_history_id=%s from Sheets Config", last_history_id)
+        else:
+            logger.info("No last_history_id found in Sheets Config; starting fresh.")
+    elif gmail_client is not None:
+        logger.info("Sheets repo missing; LAST_HISTORY_ID will remain in-memory only.")
+
+    app.config["LAST_HISTORY_ID"] = last_history_id
 
     @app.route("/", methods=["GET"])
     def index():
@@ -941,6 +951,7 @@ def create_app() -> Flask:
         gmail_client: GmailClient | None = app.config.get("GMAIL_CLIENT")
         bot: TelegramBot | None = app.config.get("TELEGRAM_BOT")
         settings: Settings = app.config["SETTINGS"]
+        repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
 
         if gmail_client is None:
             logger.error("Gmail client not configured; cannot process Gmail webhook.")
@@ -984,6 +995,17 @@ def create_app() -> Flask:
                 "Bootstrapping LAST_HISTORY_ID to %s (no history processed this time).",
                 history_id,
             )
+
+            # Persist bootstrap value via repo if available
+            if repo is not None and history_id is not None:
+                try:
+                    repo.write_config_value("last_history_id", str(history_id))
+                except Exception:
+                    logger.exception(
+                        "Failed to persist bootstrap last_history_id=%s to Config sheet",
+                        history_id,
+                    )
+
             return jsonify(
                 {
                     "ok": True,
@@ -1022,6 +1044,16 @@ def create_app() -> Flask:
         if latest_history_id is not None and latest_history_id != last_history_id:
             app.config["LAST_HISTORY_ID"] = latest_history_id
             logger.info("Updated LAST_HISTORY_ID to %s", latest_history_id)
+
+            # Persist updated value via repo if available
+            if repo is not None:
+                try:
+                    repo.write_config_value("last_history_id", str(latest_history_id))
+                except Exception:
+                    logger.exception(
+                        "Failed to persist updated last_history_id=%s to Config sheet",
+                        latest_history_id,
+                    )
 
         # ---- NEW: fetch metadata + filter by sender email ---- #
         matched_messages: list[dict[str, Any]] = []
