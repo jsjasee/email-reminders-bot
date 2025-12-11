@@ -90,9 +90,8 @@ class TelegramBot:
     # --------- Helpers for manual reminders --------- #
 
     def build_manual_offset_keyboard(self) -> types.InlineKeyboardMarkup:
-        """
-        Inline keyboard with +1h / +1d / +3d / +1w for manual reminders.
-        callback_data uses 'manual_offset:<key>' format.
+        """ Inline keyboard with +1h / +1d / +3d / +1w / Custom for manual reminders.
+        callback_data uses 'manual_offset:' format.
         """
         markup = types.InlineKeyboardMarkup()
         buttons = [
@@ -100,9 +99,11 @@ class TelegramBot:
             types.InlineKeyboardButton("+1 day", callback_data="manual_offset:1d"),
             types.InlineKeyboardButton("+3 days", callback_data="manual_offset:3d"),
             types.InlineKeyboardButton("+1 week", callback_data="manual_offset:1w"),
+            types.InlineKeyboardButton("Custom", callback_data="manual_offset:custom"),
         ]
         markup.row(buttons[0], buttons[1])
         markup.row(buttons[2], buttons[3])
+        markup.row(buttons[4])
         return markup
 
     def answer_callback_query(
@@ -210,4 +211,17 @@ class TelegramBot:
         markup.row(buttons[0], buttons[1])
         markup.row(buttons[2], buttons[3])
         markup.row(buttons[4])
+        return markup
+
+    def build_custom_datetime_cancel_keyboard(self, mode: str) -> types.InlineKeyboardMarkup:
+        """
+        Inline keyboard with a single 'Cancel' button for custom datetime flows.
+        mode is for namespacing the callback (e.g. 'manual', 'email', 'snooze').
+        """
+        markup = types.InlineKeyboardMarkup()
+        button = types.InlineKeyboardButton(
+            "Cancel",
+            callback_data=f"custom_cancel:{mode}",
+        )
+        markup.add(button)
         return markup

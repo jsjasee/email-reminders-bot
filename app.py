@@ -16,6 +16,18 @@ from gmail_client import GmailClient
 # In-memory per-chat state for /new manual reminders
 manual_new_state: Dict[int, Dict[str, Any]] = {}
 
+# In-memory per-chat state for custom datetime input
+# Example structure:
+# {
+#   chat_id: {
+#       "mode": "manual",
+#       "description": str,
+#       "original_chat_id": int,
+#       "original_message_id": int | None,
+#   }
+# }
+custom_datetime_state: Dict[int, Dict[str, Any]] = {}
+
 # will show errors in the console with different levels - levels are just priority labels for these messages,
 # like DEBUG, INFO, WARNING etc. (similar to roblox studio)
 logging.basicConfig(level=logging.INFO)
@@ -72,17 +84,17 @@ def create_app() -> Flask:
     app.config["GMAIL_CLIENT"] = gmail_client
 
     # Try to load persisted Gmail historyId from Sheets Config via ReminderSheetRepository
-    last_history_id: Optional[str] = None
+    top_level_last_history_id: Optional[str] = None # the top_level parts refers to how the json is structured - this is historyId is the historyId of the batch of records in the json
     if gmail_client is not None and sheets_repo is not None:
-        last_history_id = sheets_repo.read_config_value("last_history_id")
-        if last_history_id:
-            logger.info("Loaded last_history_id=%s from Sheets Config", last_history_id)
+        top_level_last_history_id = sheets_repo.read_config_value("last_history_id")
+        if top_level_last_history_id:
+            logger.info("Loaded last_history_id=%s from Sheets Config", top_level_last_history_id)
         else:
             logger.info("No last_history_id found in Sheets Config; starting fresh.")
     elif gmail_client is not None:
         logger.info("Sheets repo missing; LAST_HISTORY_ID will remain in-memory only.")
 
-    app.config["LAST_HISTORY_ID"] = last_history_id
+    app.config["LAST_HISTORY_ID"] = top_level_last_history_id
 
     @app.route("/", methods=["GET"])
     def index():
@@ -141,8 +153,19 @@ def create_app() -> Flask:
                 return timedelta(weeks=1)
             return None
 
-        # ------- Handle normal messages (commands / description) ------- #
+        # ------- Helper: parse custom datetime DD/MM/YYYY HH:MM -> aware datetime ------- #
+        def parse_custom_datetime(date_text: str, date_tz: ZoneInfo) -> Optional[datetime]:
+            """
+            Expected format: DD/MM/YYYY HH:MM (24h clock), e.g. 25/12/2025 14:30.
+            Returns a timezone-aware datetime in the given date_tz, or None on parse error.
+            """
+            try:
+                dt_naive = datetime.strptime(date_text, "%d/%m/%Y %H:%M")
+            except ValueError:
+                return None
+            return dt_naive.replace(tzinfo=date_tz)
 
+        # ------- Handle normal messages (commands / description / custom datetime) ------- #
         message = update.get("message")
         if message:
             chat = message.get("chat") or {}
@@ -150,6 +173,93 @@ def create_app() -> Flask:
             text = (message.get("text") or "").strip()
 
             if chat_id is None:
+                return "", 200
+
+            # 0) If this chat is waiting for a custom datetime, handle that first
+            state_custom = custom_datetime_state.get(chat_id)
+            if state_custom:
+                tz = ZoneInfo(settings.timezone)
+
+                parsed_dt = parse_custom_datetime(text, tz)
+                if parsed_dt is None:
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "Invalid format. Please use DD/MM/YYYY HH:MM "
+                            "(e.g. 25/12/2025 14:30)."
+                        ),
+                    )
+                    return "", 200
+
+                mode = state_custom.get("mode")
+                if mode == "manual":
+                    # Create manual reminder with this custom datetime
+                    repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
+                    if repo is None:
+                        logger.error("Sheets repo not configured; cannot save custom reminder.")
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Storage not configured; could not save reminder.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    description = state_custom.get("description") or ""
+                    original_chat_id = state_custom.get("original_chat_id", chat_id)
+                    original_message_id = state_custom.get("original_message_id")
+
+                    reminder = Reminder(
+                        reminder_id=str(uuid.uuid4()),
+                        source_type="manual",
+                        gmail_message_id=None,
+                        subject=None,
+                        sender=None,
+                        recipient=None,
+                        description=description,
+                        telegram_chat_id=settings.telegram_user_id or original_chat_id,
+                        due_at=parsed_dt,
+                        status="pending",
+                    )
+
+                    try:
+                        repo.create_reminder(reminder)
+                    except Exception:
+                        logger.exception("Error creating manual reminder from custom datetime input")
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Failed to save reminder.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    confirmation_text = (
+                        f"✅ Reminder created for {parsed_dt.isoformat()}:\n{description}"
+                    )
+
+                    # Prefer editing the original keyboard message; fall back to a new message
+                    if original_message_id is not None:
+                        try:
+                            bot.edit_message_text(
+                                chat_id=original_chat_id,
+                                message_id=original_message_id,
+                                text=confirmation_text,
+                                reply_markup=None,  # remove keyboard
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Error editing original message for custom manual reminder; "
+                                "sending new message instead."
+                            )
+                            bot.send_message(chat_id=original_chat_id, text=confirmation_text)
+                    else:
+                        bot.send_message(chat_id=original_chat_id, text=confirmation_text)
+
+                    # Clear custom state for this chat
+                    custom_datetime_state.pop(chat_id, None)
+                    return "", 200
+
+                # Unknown mode – just clear and ignore
+                custom_datetime_state.pop(chat_id, None)
                 return "", 200
 
             # 1) /start
@@ -186,7 +296,7 @@ def create_app() -> Flask:
                     "description": description,
                 }
 
-                # Show buttons for +1h/+1d/+3d/+1w
+                # Show buttons for +1h/+1d/+3d/+1w (+ Custom will be added in the keyboard)
                 keyboard = bot.build_manual_offset_keyboard()
                 bot.send_message(
                     chat_id=chat_id,
@@ -219,7 +329,36 @@ def create_app() -> Flask:
                     )
                 return "", 200
 
-            # ------- manual_offset:... -> create manual reminder ------- #
+            # ------- custom_cancel:mode -> cancel custom datetime flow ------- #
+            if data.startswith("custom_cancel:"):
+                mode = data.split(":", 1)[1]  # "manual", "email", "snooze", etc.
+
+                # For now we only have manual mode implemented.
+                # Just clear any custom datetime state for this chat.
+                state_custom = custom_datetime_state.pop(chat_id, None)
+
+                if callback_query_id:
+                    bot.answer_callback_query(
+                        callback_query_id,
+                        text="Custom date entry cancelled.",
+                        show_alert=False,
+                    )
+
+                # Edit the prompt message to remove the keyboard and show a cancelled notice
+                if message_id is not None:
+                    try:
+                        bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text="Custom date entry cancelled.",
+                            reply_markup=None,  # remove Cancel button
+                        )
+                    except Exception:
+                        logger.exception("Failed to edit message after custom_cancel callback.")
+
+                return "", 200
+
+            # ------- manual_offset:... -> create manual reminder or enter custom flow ------- #
             if data.startswith("manual_offset:"):
                 if repo is None:
                     logger.error("Sheets repo not configured; cannot create manual reminder.")
@@ -243,7 +382,38 @@ def create_app() -> Flask:
                     return "", 200
 
                 description = state.get("description") or ""
-                offset_key = data.split(":", 1)[1]  # "1h", "1d", "3d", "1w"
+                offset_key = data.split(":", 1)[1]  # "1h", "1d", "3d", "1w" or "custom"
+
+                # NEW: handle custom offset by entering custom datetime state
+                if offset_key == "custom":
+                    custom_datetime_state[chat_id] = {
+                        "mode": "manual",
+                        "description": description,
+                        "original_chat_id": chat_id,
+                        "original_message_id": message_id,
+                    }
+                    # We no longer need the /new offset state
+                    manual_new_state.pop(chat_id, None)
+
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Send a custom date/time.",
+                            show_alert=False,
+                        )
+
+                    cancel_keyboard = bot.build_custom_datetime_cancel_keyboard("manual")
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "Please type the date and time in DD/MM/YYYY HH:MM "
+                            "(e.g. 25/12/2025 14:30)."
+                        ),
+                        reply_markup=cancel_keyboard,
+                    )
+                    return "", 200
+
+                # Existing preset offsets (+1h, +1d, +3d, +1w)
                 delta = offset_key_to_delta(offset_key)
                 if delta is None:
                     if callback_query_id:
@@ -311,7 +481,6 @@ def create_app() -> Flask:
                         chat_id=chat_id,
                         text=confirmation_text,
                     )
-
                 return "", 200
 
             # ------- email_action:... -> Set reminder / Done for email ------- #
