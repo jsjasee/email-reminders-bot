@@ -185,37 +185,47 @@ class TelegramBot:
 
     def build_reminder_control_keyboard(self, reminder_id: str) -> types.InlineKeyboardMarkup:
         """
-        Inline keyboard for a due reminder with:
-          - +1 hour / +1 day / +3 days / +1 week / Complete
+        Inline keyboard for due reminders:
+          +1h / +1d / +3d / +1w / Custom / Complete
 
-        callback_data:
-          - reminder_extend:<reminder_id>:1h
-          - reminder_extend:<reminder_id>:1d
-          - reminder_extend:<reminder_id>:3d
-          - reminder_extend:<reminder_id>:1w
-          - reminder_complete:<reminder_id>
+        Snooze buttons use: reminder_extend:<reminder_id>:<key>
+        Complete uses:       reminder_complete:<reminder_id>
         """
         markup = types.InlineKeyboardMarkup()
-        buttons = [
+
+        snooze_buttons = [
             types.InlineKeyboardButton(
-                "+1 hour", callback_data=f"reminder_extend:{reminder_id}:1h"
+                "+1 hour",
+                callback_data=f"reminder_extend:{reminder_id}:1h",
             ),
             types.InlineKeyboardButton(
-                "+1 day", callback_data=f"reminder_extend:{reminder_id}:1d"
+                "+1 day",
+                callback_data=f"reminder_extend:{reminder_id}:1d",
             ),
             types.InlineKeyboardButton(
-                "+3 days", callback_data=f"reminder_extend:{reminder_id}:3d"
+                "+3 days",
+                callback_data=f"reminder_extend:{reminder_id}:3d",
             ),
             types.InlineKeyboardButton(
-                "+1 week", callback_data=f"reminder_extend:{reminder_id}:1w"
+                "+1 week",
+                callback_data=f"reminder_extend:{reminder_id}:1w",
             ),
             types.InlineKeyboardButton(
-                "Complete", callback_data=f"reminder_complete:{reminder_id}"
+                "Custom",
+                callback_data=f"reminder_extend:{reminder_id}:custom",
             ),
         ]
-        markup.row(buttons[0], buttons[1])
-        markup.row(buttons[2], buttons[3])
-        markup.row(buttons[4])
+        complete_button = types.InlineKeyboardButton(
+            "Complete",
+            callback_data=f"reminder_complete:{reminder_id}",
+        )
+
+        # Layout: 2 rows presets, 1 row Custom, 1 row Complete
+        markup.row(snooze_buttons[0], snooze_buttons[1])
+        markup.row(snooze_buttons[2], snooze_buttons[3])
+        markup.row(snooze_buttons[4])
+        markup.row(complete_button)
+
         return markup
 
     def build_custom_datetime_cancel_keyboard(self, mode: str) -> types.InlineKeyboardMarkup:

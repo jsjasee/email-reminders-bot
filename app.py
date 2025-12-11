@@ -383,7 +383,82 @@ def create_app() -> Flask:
                     custom_datetime_state.pop(chat_id, None)
                     return "", 200
 
-                # Unknown mode – just clear and ignore
+                elif mode == "snooze":
+                    # Custom snooze: update due_at to parsed_dt
+                    repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
+                    if repo is None:
+                        logger.error("Sheets repo not configured; cannot snooze reminder.")
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Storage not configured; could not snooze reminder.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    reminder_id = state_custom.get("reminder_id")
+                    original_chat_id = state_custom.get("original_chat_id", chat_id)
+                    original_message_id = state_custom.get("original_message_id")
+                    original_text = state_custom.get("original_text") or "Reminder"
+                    prompt_message_id = state_custom.get("prompt_message_id")
+                    prompt_chat_id = state_custom.get("prompt_chat_id", chat_id)
+
+                    try:
+                        updated = repo.update_reminder_due_at(reminder_id, parsed_dt)
+                    except Exception:
+                        logger.exception("Error updating reminder due_at (custom snooze)")
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Failed to snooze reminder.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    if not updated:
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Reminder not found.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    new_text = original_text + f"\n\n⏰ Snoozed to {parsed_dt.isoformat()}."
+
+                    # Edit the original reminder card
+                    if original_message_id is not None:
+                        try:
+                            bot.edit_message_text(
+                                chat_id=original_chat_id,
+                                message_id=original_message_id,
+                                text=new_text,
+                                reply_markup=None,  # remove keyboard
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Error editing reminder message after custom snooze; "
+                                "sending new message instead."
+                            )
+                            bot.send_message(chat_id=original_chat_id, text=new_text)
+                    else:
+                        bot.send_message(chat_id=original_chat_id, text=new_text)
+
+                    # Clean up the custom prompt
+                    if prompt_message_id is not None:
+                        try:
+                            bot.edit_message_text(
+                                chat_id=prompt_chat_id,
+                                message_id=prompt_message_id,
+                                text="✅ Custom date received. Reminder snoozed.",
+                                reply_markup=None,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Error editing custom snooze prompt message after success."
+                            )
+
+                    custom_datetime_state.pop(chat_id, None)
+                    return "", 200
+
+                    # Unknown mode – just clear and ignore
                 custom_datetime_state.pop(chat_id, None)
                 return "", 200
 
@@ -456,8 +531,6 @@ def create_app() -> Flask:
 
             # ------- custom_cancel:mode -> cancel custom datetime flow ------- #
             if data.startswith("custom_cancel:"):
-                mode = data.split(":", 1)[1]  # "manual", "email", "snooze", etc.
-
                 # Pop any custom datetime state for this chat
                 state_custom = custom_datetime_state.pop(chat_id, None)
 
@@ -551,7 +624,6 @@ def create_app() -> Flask:
 
                     # Try to record the prompt message_id so we can clean it up later
                     try:
-                        prompt_message_id = None
                         if isinstance(sent, dict):
                             prompt_message_id = sent.get("message_id")
                         else:
@@ -789,7 +861,6 @@ def create_app() -> Flask:
 
                     # Capture prompt_message_id so we can clean it up on success/cancel
                     try:
-                        prompt_message_id = None
                         if isinstance(sent, dict):
                             prompt_message_id = sent.get("message_id")
                         else:
@@ -896,7 +967,7 @@ def create_app() -> Flask:
 
                 return "", 200
 
-            # ------- reminder_extend:... -> snooze an existing reminder ------- #
+            # ------- reminder_extend:... -> snooze an existing reminder or enter custom flow ------- #
             if data.startswith("reminder_extend:"):
                 # format: reminder_extend:<reminder_id>:<key>
                 parts = data.split(":", 2)
@@ -921,6 +992,58 @@ def create_app() -> Flask:
                         )
                     return "", 200
 
+                # --- NEW: custom snooze path --- #
+                if offset_key == "custom":
+                    base_text = message.get("text") or "Reminder"
+
+                    # Seed state so the next text message is interpreted as custom datetime
+                    custom_datetime_state[chat_id] = {
+                        "mode": "snooze",
+                        "reminder_id": reminder_id,
+                        "original_chat_id": chat_id,
+                        "original_message_id": message_id,
+                        "original_text": base_text,
+                        # prompt_message_id will be filled after sending prompt
+                    }
+
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Send a custom date/time.",
+                            show_alert=False,
+                        )
+
+                    cancel_keyboard = bot.build_custom_datetime_cancel_keyboard("snooze")
+
+                    sent = bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "Send a new date/time for this reminder in "
+                            "DD/MM/YYYY HH:MM (e.g. 25/12/2025 14:30)."
+                        ),
+                        reply_markup=cancel_keyboard,
+                    )
+
+                    # Capture prompt_message_id so we can clean it up later
+                    try:
+                        if isinstance(sent, dict):
+                            prompt_message_id = sent.get("message_id")
+                        else:
+                            prompt_message_id = getattr(sent, "message_id", None)
+
+                        if prompt_message_id is not None:
+                            state_custom = custom_datetime_state.get(chat_id) or {}
+                            state_custom["prompt_message_id"] = prompt_message_id
+                            state_custom["prompt_chat_id"] = chat_id
+                            custom_datetime_state[chat_id] = state_custom
+                    except Exception:
+                        logger.exception(
+                            "Failed to capture prompt_message_id for snooze custom datetime."
+                        )
+
+                    return "", 200
+
+                # --- Existing fixed-offset snooze (+1h, +1d, +3d, +1w) --- #
                 delta = offset_key_to_delta(offset_key)
                 if delta is None:
                     if callback_query_id:
