@@ -274,6 +274,115 @@ def create_app() -> Flask:
                     custom_datetime_state.pop(chat_id, None)
                     return "", 200
 
+                elif mode == "email":
+                    # Email custom datetime: create email-based reminder at parsed_dt
+                    repo: ReminderSheetRepository | None = app.config.get("REMINDER_REPO")
+                    gmail_client = app.config.get("GMAIL_CLIENT")
+                    if repo is None or gmail_client is None:
+                        logger.error(
+                            "Missing repo or gmail_client; cannot save email custom reminder."
+                        )
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Storage or email access not configured; could not save reminder.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    gmail_message_id = state_custom.get("gmail_message_id")
+                    original_chat_id = state_custom.get("original_chat_id", chat_id)
+                    original_message_id = state_custom.get("original_message_id")
+                    original_text = state_custom.get("original_text") or ""
+                    prompt_message_id = state_custom.get("prompt_message_id")
+                    prompt_chat_id = state_custom.get("prompt_chat_id", chat_id)
+
+                    # Fetch email metadata
+                    try:
+                        meta = gmail_client.get_message_metadata(gmail_message_id)
+                    except Exception:
+                        logger.exception("Error fetching Gmail metadata for email custom reminder.")
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Failed to read email metadata; reminder not created.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    subject = meta.get("subject")
+                    sender = meta.get("from")
+                    recipient = meta.get("to")
+
+                    reminder = Reminder(
+                        reminder_id=str(uuid.uuid4()),
+                        source_type="email",
+                        gmail_message_id=gmail_message_id,
+                        subject=subject,
+                        sender=sender,
+                        recipient=recipient,
+                        description=None,
+                        telegram_chat_id=settings.telegram_user_id or original_chat_id,
+                        due_at=parsed_dt,
+                        status="pending",
+                    )
+
+                    try:
+                        repo.create_reminder(reminder)
+                    except Exception:
+                        logger.exception("Error creating email reminder from custom datetime input")
+                        bot.send_message(
+                            chat_id=chat_id,
+                            text="Failed to save email reminder.",
+                        )
+                        custom_datetime_state.pop(chat_id, None)
+                        return "", 200
+
+                    # Edit original email card
+                    summary_subject = subject or "(no subject)"
+                    if original_text:
+                        new_text = (
+                                original_text
+                                + f"\n\n✅ Reminder created for {parsed_dt.isoformat()}."
+                        )
+                    else:
+                        new_text = (
+                            f"Reminder created for {parsed_dt.isoformat()} "
+                            f"for email:\n{summary_subject}"
+                        )
+
+                    if original_message_id is not None:
+                        try:
+                            bot.edit_message_text(
+                                chat_id=original_chat_id,
+                                message_id=original_message_id,
+                                text=new_text,
+                                reply_markup=None,  # remove keyboard
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Error editing original email message for custom reminder; "
+                                "sending new message instead."
+                            )
+                            bot.send_message(chat_id=original_chat_id, text=new_text)
+                    else:
+                        bot.send_message(chat_id=original_chat_id, text=new_text)
+
+                    # Clean up custom prompt message
+                    if prompt_message_id is not None:
+                        try:
+                            bot.edit_message_text(
+                                chat_id=prompt_chat_id,
+                                message_id=prompt_message_id,
+                                text="✅ Custom date received for this email.",
+                                reply_markup=None,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Error editing email custom datetime prompt message after success."
+                            )
+
+                    custom_datetime_state.pop(chat_id, None)
+                    return "", 200
+
                 # Unknown mode – just clear and ignore
                 custom_datetime_state.pop(chat_id, None)
                 return "", 200
@@ -609,7 +718,7 @@ def create_app() -> Flask:
                     )
                 return "", 200
 
-            # ------- email_offset:... -> create email-based reminder ------- #
+            # ------- email_offset:... -> create email-based reminder or enter custom flow ------- #
             if data.startswith("email_offset:"):
                 # format: email_offset:<gmail_message_id>:<key>
                 parts = data.split(":", 2)
@@ -634,7 +743,7 @@ def create_app() -> Flask:
                         )
                     return "", 200
 
-                # Need Gmail client to fetch metadata
+                # Need Gmail client for email-based reminders
                 gmail_client = app.config.get("GMAIL_CLIENT")
                 if gmail_client is None:
                     logger.error("Gmail client not configured; cannot create email reminder.")
@@ -646,6 +755,59 @@ def create_app() -> Flask:
                         )
                     return "", 200
 
+                # --- NEW: email custom datetime path --- #
+                if offset_key == "custom":
+                    # Record enough state to finish later when user sends the datetime
+                    original_text = message.get("text") or ""
+
+                    custom_datetime_state[chat_id] = {
+                        "mode": "email",
+                        "gmail_message_id": gmail_message_id,
+                        "original_chat_id": chat_id,
+                        "original_message_id": message_id,
+                        "original_text": original_text,
+                        # prompt_message_id will be set after sending prompt
+                    }
+
+                    if callback_query_id:
+                        bot.answer_callback_query(
+                            callback_query_id,
+                            text="Send a custom date/time.",
+                            show_alert=False,
+                        )
+
+                    cancel_keyboard = bot.build_custom_datetime_cancel_keyboard("email")
+
+                    sent = bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "Please type the date and time in DD/MM/YYYY HH:MM "
+                            "(e.g. 25/12/2025 14:30)."
+                        ),
+                        reply_markup=cancel_keyboard,
+                    )
+
+                    # Capture prompt_message_id so we can clean it up on success/cancel
+                    try:
+                        prompt_message_id = None
+                        if isinstance(sent, dict):
+                            prompt_message_id = sent.get("message_id")
+                        else:
+                            prompt_message_id = getattr(sent, "message_id", None)
+
+                        if prompt_message_id is not None:
+                            state_custom = custom_datetime_state.get(chat_id) or {}
+                            state_custom["prompt_message_id"] = prompt_message_id
+                            state_custom["prompt_chat_id"] = chat_id
+                            custom_datetime_state[chat_id] = state_custom
+                    except Exception:
+                        logger.exception(
+                            "Failed to capture prompt_message_id for email custom datetime."
+                        )
+
+                    return "", 200
+
+                # --- Existing preset offsets (+1h, +1d, +3d, +1w) --- #
                 delta = offset_key_to_delta(offset_key)
                 if delta is None:
                     if callback_query_id:

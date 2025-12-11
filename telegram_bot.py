@@ -151,31 +151,36 @@ class TelegramBot:
 
     def build_email_offset_keyboard(self, gmail_message_id: str) -> types.InlineKeyboardMarkup:
         """
-        Inline keyboard with +1h / +1d / +3d / +1w for email reminders.
-
-        callback_data:
-          - email_offset:<gmail_message_id>:1h
-          - email_offset:<gmail_message_id>:1d
-          - email_offset:<gmail_message_id>:3d
-          - email_offset:<gmail_message_id>:1w
+        Inline keyboard with +1h / +1d / +3d / +1w / Custom for email-based reminders.
+        callback_data format: email_offset:<gmail_message_id>:<key> -> the key can be either 1h,1d,3d,1w, or custom
         """
         markup = types.InlineKeyboardMarkup()
         buttons = [
             types.InlineKeyboardButton(
-                "+1 hour", callback_data=f"email_offset:{gmail_message_id}:1h"
+                "+1 hour",
+                callback_data=f"email_offset:{gmail_message_id}:1h",
             ),
             types.InlineKeyboardButton(
-                "+1 day", callback_data=f"email_offset:{gmail_message_id}:1d"
+                "+1 day",
+                callback_data=f"email_offset:{gmail_message_id}:1d",
             ),
             types.InlineKeyboardButton(
-                "+3 days", callback_data=f"email_offset:{gmail_message_id}:3d"
+                "+3 days",
+                callback_data=f"email_offset:{gmail_message_id}:3d",
             ),
             types.InlineKeyboardButton(
-                "+1 week", callback_data=f"email_offset:{gmail_message_id}:1w"
+                "+1 week",
+                callback_data=f"email_offset:{gmail_message_id}:1w",
+            ),
+            types.InlineKeyboardButton(
+                "Custom",
+                callback_data=f"email_offset:{gmail_message_id}:custom",
             ),
         ]
+        # Layout: two rows of presets + one row for Custom
         markup.row(buttons[0], buttons[1])
         markup.row(buttons[2], buttons[3])
+        markup.row(buttons[4])
         return markup
 
     def build_reminder_control_keyboard(self, reminder_id: str) -> types.InlineKeyboardMarkup:
