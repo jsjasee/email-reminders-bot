@@ -207,6 +207,8 @@ def create_app() -> Flask:
                     description = state_custom.get("description") or ""
                     original_chat_id = state_custom.get("original_chat_id", chat_id)
                     original_message_id = state_custom.get("original_message_id")
+                    prompt_message_id = state_custom.get("prompt_message_id")
+                    prompt_chat_id = state_custom.get("prompt_chat_id", chat_id)
 
                     reminder = Reminder(
                         reminder_id=str(uuid.uuid4()),
@@ -253,6 +255,20 @@ def create_app() -> Flask:
                             bot.send_message(chat_id=original_chat_id, text=confirmation_text)
                     else:
                         bot.send_message(chat_id=original_chat_id, text=confirmation_text)
+
+                    # NEW: clean up the prompt message (remove Cancel keyboard / close it)
+                    if prompt_message_id is not None:
+                        try:
+                            bot.edit_message_text(
+                                chat_id=prompt_chat_id,
+                                message_id=prompt_message_id,
+                                text="✅ Custom date received.",
+                                reply_markup=None,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Error editing custom datetime prompt message after success."
+                            )
 
                     # Clear custom state for this chat
                     custom_datetime_state.pop(chat_id, None)
@@ -333,9 +349,16 @@ def create_app() -> Flask:
             if data.startswith("custom_cancel:"):
                 mode = data.split(":", 1)[1]  # "manual", "email", "snooze", etc.
 
-                # For now we only have manual mode implemented.
-                # Just clear any custom datetime state for this chat.
+                # Pop any custom datetime state for this chat
                 state_custom = custom_datetime_state.pop(chat_id, None)
+
+                # If we were in manual custom mode, restore the awaiting_offset state, so that users can press the buttons "+1h, +1 day, +1 week, custom" again
+                if state_custom and state_custom.get("mode") == "manual":
+                    description = state_custom.get("description") or ""
+                    manual_new_state[chat_id] = {
+                        "stage": "awaiting_offset",
+                        "description": description,
+                    }
 
                 if callback_query_id:
                     bot.answer_callback_query(
@@ -344,7 +367,7 @@ def create_app() -> Flask:
                         show_alert=False,
                     )
 
-                # Edit the prompt message to remove the keyboard and show a cancelled notice
+                # Edit the prompt message (the one with Cancel) to show cancelled and remove keyboard
                 if message_id is not None:
                     try:
                         bot.edit_message_text(
@@ -386,13 +409,16 @@ def create_app() -> Flask:
 
                 # NEW: handle custom offset by entering custom datetime state
                 if offset_key == "custom":
+                    # Seed state with info about the original card
                     custom_datetime_state[chat_id] = {
                         "mode": "manual",
                         "description": description,
                         "original_chat_id": chat_id,
                         "original_message_id": message_id,
+                        # prompt_message_id will be filled after send_message
                     }
-                    # We no longer need the /new offset state
+
+                    # Once we enter custom mode, this /new flow is no longer in awaiting_offset
                     manual_new_state.pop(chat_id, None)
 
                     if callback_query_id:
@@ -403,7 +429,9 @@ def create_app() -> Flask:
                         )
 
                     cancel_keyboard = bot.build_custom_datetime_cancel_keyboard("manual")
-                    bot.send_message(
+
+                    # Send prompt asking for custom datetime, with Cancel button
+                    sent = bot.send_message(
                         chat_id=chat_id,
                         text=(
                             "Please type the date and time in DD/MM/YYYY HH:MM "
@@ -411,6 +439,25 @@ def create_app() -> Flask:
                         ),
                         reply_markup=cancel_keyboard,
                     )
+
+                    # Try to record the prompt message_id so we can clean it up later
+                    try:
+                        prompt_message_id = None
+                        if isinstance(sent, dict):
+                            prompt_message_id = sent.get("message_id")
+                        else:
+                            prompt_message_id = getattr(sent, "message_id", None)
+
+                        if prompt_message_id is not None:
+                            state_custom = custom_datetime_state.get(chat_id) or {}
+                            state_custom["prompt_message_id"] = prompt_message_id
+                            state_custom["prompt_chat_id"] = chat_id
+                            custom_datetime_state[chat_id] = state_custom
+                    except Exception:
+                        logger.exception(
+                            "Failed to capture prompt_message_id for custom datetime."
+                        )
+
                     return "", 200
 
                 # Existing preset offsets (+1h, +1d, +3d, +1w)
