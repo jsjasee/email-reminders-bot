@@ -441,12 +441,12 @@ def create_app() -> Flask:
                     else:
                         bot.send_message(chat_id=original_chat_id, text=new_text)
 
-                    # Clean up the custom prompt
+                    # Clean up the custom prompt -> basically means to EDIT that prompt message.
                     if prompt_message_id is not None:
                         try:
                             bot.edit_message_text(
-                                chat_id=prompt_chat_id,
-                                message_id=prompt_message_id,
+                                chat_id=prompt_chat_id, # this is the same as our chat_id, so technically don't need this variable
+                                message_id=prompt_message_id, # we need the message AND chat_id in order to edit the message
                                 text="✅ Custom date received. Reminder snoozed.",
                                 reply_markup=None,
                             )
