@@ -441,7 +441,7 @@ def create_app() -> Flask:
                     else:
                         bot.send_message(chat_id=original_chat_id, text=new_text)
 
-                    # Clean up the custom prompt -> basically means to EDIT that prompt message.
+                    # Clean up the custom prompt -> basically means to EDIT that prompt message and remove the keyboard.
                     if prompt_message_id is not None:
                         try:
                             bot.edit_message_text(
