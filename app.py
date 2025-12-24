@@ -1349,7 +1349,17 @@ def create_app() -> Flask:
         from_header = meta.get("from") or "(unknown sender)"
         subject = meta.get("subject") or "(no subject)"
 
-        text = f"New email\nFrom: {from_header}\nSubject: {subject}"
+        original_recipient = meta.get("original_recipient")
+
+        if original_recipient:
+            text = (
+                "New email\n"
+                f"From: {from_header}\n"
+                f"To: {original_recipient}\n"
+                f"Subject: {subject}"
+            )
+        else:
+            text = f"New email\nFrom: {from_header}\nSubject: {subject}"
 
         keyboard = bot.build_email_action_keyboard(gmail_message_id)
 
@@ -1571,6 +1581,7 @@ def create_app() -> Flask:
 
             from_header = meta.get("from") or ""
             subject = meta.get("subject") or "(no subject)"
+            original_recipient = meta.get("original_recipient")
 
             # Normalise for case-insensitive substring match
             if settings.target_sender_email.lower() in from_header.lower():
@@ -1586,6 +1597,7 @@ def create_app() -> Flask:
                         "gmail_message_id": msg_id,
                         "from": from_header,
                         "subject": subject,
+                        "original_recipient": original_recipient,
                     }
                 )
             else:
@@ -1612,8 +1624,18 @@ def create_app() -> Flask:
                 gmail_message_id = mm["gmail_message_id"]
                 from_header = mm["from"] or "(unknown sender)"
                 subject = mm["subject"] or "(no subject)"
+                original_recipient = mm.get("original_recipient")
 
-                text = f"New email\nFrom: {from_header}\nSubject: {subject}"
+                if original_recipient:
+                    text = (
+                        "New email\n"
+                        f"From: {from_header}\n"
+                        f"To: {original_recipient}\n"
+                        f"Subject: {subject}"
+                    )
+                else:
+                    text = f"New email\nFrom: {from_header}\nSubject: {subject}"
+
                 keyboard = bot.build_email_action_keyboard(gmail_message_id)
 
                 try:
