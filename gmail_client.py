@@ -1,4 +1,5 @@
 import json
+import logging, base64, re
 from typing import Any, Dict, List
 
 from google.oauth2.credentials import Credentials
@@ -8,6 +9,8 @@ from googleapiclient.errors import HttpError
 # We requested this scope in gmail_oauth_setup.py
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
+# Set up a logger for tracking
+logger = logging.getLogger(__name__)
 
 class GmailClient:
     """
@@ -39,6 +42,78 @@ class GmailClient:
             cache_discovery=False,
         )
         self.topic_name = "projects/email-reminders-bot/topics/gmail-push-topic"
+
+    def _get_plain_text(self, payload: dict) -> str | None:
+        """
+        Walk the Gmail payload tree and return the first text/plain body as a string.
+        This only returns the plain body text of the email, and is a simple decoder.
+        """
+        # payload = one MIME part from Gmail (mimeType, body, maybe parts, etc.)
+        if not payload:
+            return None
+
+        # Content type of this part, e.g. "text/plain", "text/html", "multipart/alternative"
+        mime_type = payload.get("mimeType")
+
+        # "body" holds the raw data for this part (if it is a leaf)
+        body = payload.get("body") or {}
+        # Base64url-encoded content for this part (if present)
+        data = body.get("data")
+
+        # Case 1: this part is a simple text/plain part with data
+        if mime_type == "text/plain" and data:
+            try:
+                # Gmail uses base64url without padding; add "===" so the decoder accepts it
+                decoded_bytes = base64.urlsafe_b64decode(data + "===")
+                # Convert bytes -> string using UTF-8; invalid bytes become � instead of crashing
+                return decoded_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                logger.exception("Failed to decode text/plain body")
+                return None
+
+        # Case 2: multipart container – look inside its child parts
+        parts = payload.get("parts") or []  # parts is a list of child payload dicts.
+        for part in parts:
+            # Recursive call: try to extract text/plain from this child part
+            text = self._get_plain_text(part)
+            if text:
+                # As soon as we find any plain text body, return it
+                return text
+
+        # No text/plain found in this part or its children
+        return None
+
+    def _extract_original_recipient_from_body(self, message: dict) -> str | None:
+        """
+        This is the highly specialised function for our use-case, to “dig To: out of a forwarded block”
+        For manually forwarded Gmail emails, the original message headers
+        (including 'To:') are embedded in the body, typically as:
+
+            ---------- Forwarded message ---------
+            From: abc@gmail.com
+            Date: ...
+            Subject: ...
+            To: def@gmail.com
+
+        We decode the text/plain content and look for a 'To:' line.
+        Returns the first such value found, or None if not found.
+        """
+        payload = message.get("payload", {})
+        text = self._get_plain_text(payload)
+        if not text:
+            return None
+
+        # If there's a forwarded marker, search from there; otherwise search whole body
+        lowered = text.lower()
+        forwarded_idx = lowered.find("forwarded message")
+        search_area = text[forwarded_idx:] if forwarded_idx != -1 else text
+
+        m = re.search(r"^To:\s*(.+)$", search_area, flags=re.MULTILINE)
+        if not m:
+            return None
+
+        value = m.group(1).strip()
+        return value or None
 
     def setup_watch(self) -> dict:
         """
@@ -100,44 +175,57 @@ class GmailClient:
         messages = resp.get("messages", [])
         return [m["id"] for m in messages]
 
-    def get_message_metadata(self, message_id: str) -> Dict[str, Any]:
+    def get_message_metadata(self, message_id: str) -> dict:
         """
-        Fetch minimal metadata for a specific message:
-        - gmail_message_id
-        - from
-        - to
-        - subject
-        - internal_date (ms since epoch as string)
-        - label_ids
+        Return minimal metadata for a message_id.
+
+        Keys:
+            - "subject": str | None
+            - "from": str | None
+            - "to": str | None   (envelope To)
+            - "original_recipient": str | None (best guess from forwarded body, if any)
         """
-        try:
-            resp = (
-                self.service.users()
-                .messages()
-                .get(
-                    userId="me",
-                    id=message_id,
-                    format="metadata",
-                    metadataHeaders=["From", "To", "Subject"],
-                )
-                .execute()
+        # Use "full" so we can inspect the body for forwarded headers
+        msg = (
+            self.service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=message_id,
+                format="full",
             )
-        except HttpError as e:
-            print(f"Gmail API error in get_message_metadata: {e}")
-            raise
+            .execute()
+        )
 
-        headers = resp.get("payload", {}).get("headers", []) # headers = email envelope fields: From, To, Subject.
-        header_map = {h.get("name"): h.get("value") for h in headers} # headers_map is just a convenience to convert
-        # these list of headers from gmail to convert it into a readable dict.
+        headers = msg.get("payload", {}).get("headers", [])
 
-        return {
-            "gmail_message_id": resp.get("id"),
-            "from": header_map.get("From"),
-            "to": header_map.get("To"),
-            "subject": header_map.get("Subject"),
-            "internal_date": resp.get("internalDate"),
-            "label_ids": resp.get("labelIds", []),
+        meta: dict[str, str | None] = {
+            "subject": None,
+            "from": None,
+            "to": None,
         }
+
+        for h in headers:
+            name = (h.get("name") or "").lower()
+            value = h.get("value") or ""
+            if name == "subject":
+                meta["subject"] = value
+            elif name == "from":
+                meta["from"] = value
+            elif name == "to":
+                meta["to"] = value
+
+        # Best-effort extraction of original recipient from forwarded block
+        original_recipient = self._extract_original_recipient_from_body(msg)
+        if original_recipient:
+            meta["original_recipient"] = original_recipient
+            logger.info("Extracted original_recipient=%r for message_id=%s",
+                        original_recipient, message_id)
+        else:
+            meta["original_recipient"] = None
+            logger.info("No original_recipient found for message_id=%s", message_id)
+
+        return meta
 
     def list_new_message_ids_since(
             self,
