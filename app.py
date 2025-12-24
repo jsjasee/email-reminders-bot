@@ -310,7 +310,7 @@ def create_app() -> Flask:
 
                     subject = meta.get("subject")
                     sender = meta.get("from")
-                    recipient = meta.get("to")
+                    recipient = meta.get("original_recipient") or meta.get("to") # only default to "to" aka the target email address if the recipient email address we wanna get is empty
 
                     reminder = Reminder(
                         reminder_id=str(uuid.uuid4()),
@@ -907,7 +907,7 @@ def create_app() -> Flask:
 
                 subject = meta.get("subject")
                 sender = meta.get("from")
-                recipient = meta.get("to")
+                recipient = meta.get("original_recipient") or meta.get("to")
 
                 reminder = Reminder(
                     reminder_id=str(uuid.uuid4()),
