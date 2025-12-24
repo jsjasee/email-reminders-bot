@@ -1726,7 +1726,7 @@ def create_app() -> Flask:
                 subject = r.subject or "(no subject)"
                 sender = r.sender or "(unknown sender)"
                 recipient = r.recipient
-                text = f"Reminder (email):\nFrom: {sender}\nTo:{recipient}\nSubject: {subject}"
+                text = f"Reminder (email):\nFrom: {sender}\nTo: {recipient}\nSubject: {subject}"
             else:
                 desc = r.description or "(no description)"
                 text = f"Reminder:\n{desc}"
