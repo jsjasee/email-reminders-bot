@@ -10,7 +10,8 @@ from telegram_bot import TelegramBot
 from sheets_repo import ReminderSheetRepository, Reminder
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Collection
+from email.utils import parseaddr
 from gmail_client import GmailClient
 
 # In-memory per-chat state for /new manual reminders
@@ -33,6 +34,19 @@ custom_datetime_state: Dict[int, Dict[str, Any]] = {}
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def is_sender_allowed(from_header: str, allowed_senders: Collection[str]) -> bool:
+    """Return True if the From header matches one of the allowed sender emails."""
+    if not allowed_senders:
+        return False
+
+    _, email = parseaddr(from_header or "")
+    if not email:
+        return False
+
+    cleaned = email.casefold().strip()
+    return cleaned in allowed_senders
+
+
 def create_app() -> Flask:
     app = Flask(__name__) # this is the flask app, storing routes, requests and configuration settings
     # and also sending responses etc.
@@ -40,6 +54,8 @@ def create_app() -> Flask:
     # Load config once at startup
     settings: Settings = load_settings()
     app.config["SETTINGS"] = settings
+    app.config["ALLOWED_SENDER_EMAILS"] = settings.allowed_sender_emails
+    app.config["ALLOWED_SENDER_SET"] = set(settings.allowed_sender_emails)
 
     # Initialise TelegramBot (maybe None if token is missing)
     telegram_bot = None
@@ -1584,10 +1600,10 @@ def create_app() -> Flask:
             original_recipient = meta.get("original_recipient")
 
             # Normalise for case-insensitive substring match
-            if settings.target_sender_email.lower() in from_header.lower():
+            allowed_senders = app.config.get("ALLOWED_SENDER_SET", set())
+            if is_sender_allowed(from_header, allowed_senders):
                 logger.info(
-                    "Matched target sender %s for message_id=%s: from=%r, subject=%r",
-                    settings.target_sender_email,
+                    "Matched allowed sender for message_id=%s: from=%r, subject=%r",
                     msg_id,
                     from_header,
                     subject,
@@ -1602,10 +1618,10 @@ def create_app() -> Flask:
                 )
             else:
                 logger.info(
-                    "Ignoring message_id=%s: sender %r does not match %s",
+                    "Ignoring message_id=%s: sender %r not in allowlist (%d entries)",
                     msg_id,
                     from_header,
-                    settings.target_sender_email,
+                    len(allowed_senders),
                 )
 
         # ---- NEW: send Telegram cards for matched messages ---- #
