@@ -89,7 +89,7 @@ def create_app() -> Flask:
     gmail_client = None
     if settings.gmail_oauth_token_json:
         try:
-            gmail_client = GmailClient(settings.gmail_oauth_token_json)
+            gmail_client = GmailClient(settings.gmail_oauth_token_json, settings.target_recipient_email)
             logger.info("Initialised GmailClient successfully.")
         except Exception:
             logger.exception("Failed to initialise GmailClient.")

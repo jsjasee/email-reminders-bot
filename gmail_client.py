@@ -22,7 +22,7 @@ class GmailClient:
       - That JSON includes a refresh_token so access tokens can be refreshed.
     """
 
-    def __init__(self, oauth_token_json: str) -> None:
+    def __init__(self, oauth_token_json: str, target_recipient_email) -> None:
         if not oauth_token_json:
             raise ValueError("GMAIL_OAUTH_TOKEN_JSON is empty; cannot init GmailClient.")
 
@@ -42,6 +42,7 @@ class GmailClient:
             cache_discovery=False,
         )
         self.topic_name = "projects/email-reminders-bot/topics/gmail-push-topic"
+        self.target_recipient_email = target_recipient_email
 
     def _get_plain_text(self, payload: dict) -> str | None:
         """
@@ -217,6 +218,9 @@ class GmailClient:
 
         # Best-effort extraction of original recipient from forwarded block
         original_recipient = self._extract_original_recipient_from_body(msg)
+        if self.target_recipient_email not in meta["to"]:
+            original_recipient = meta["to"]
+
         if original_recipient:
             meta["original_recipient"] = original_recipient
             logger.info("Extracted original_recipient=%r for message_id=%s",

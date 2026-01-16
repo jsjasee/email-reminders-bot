@@ -88,6 +88,7 @@ class Settings:
     webhook_url: str
     target_sender_email: Optional[str]
     allowed_sender_emails: list[str]
+    target_recipient_email: str
 
 def load_settings() -> Settings:
     telegram_user_id_raw = os.getenv("TELEGRAM_USER_ID")
@@ -95,6 +96,7 @@ def load_settings() -> Settings:
     raw_allowed = os.getenv("ALLOWED_SENDER_EMAILS")
     allowed_emails: list[str] = []
     target_sender_email = os.getenv("TARGET_SENDER_EMAIL")
+    target_recipient_email = os.getenv("TARGET_RECIPIENT_EMAIL")
 
     if raw_allowed:
         allowed_emails = parse_allowed_sender_emails(raw_allowed)
@@ -119,4 +121,5 @@ def load_settings() -> Settings:
         webhook_url=os.getenv("WEBHOOK_URL"),
         target_sender_email=target_sender_email,
         allowed_sender_emails=allowed_emails,
+        target_recipient_email=target_recipient_email
     )
