@@ -110,6 +110,7 @@ def create_app() -> Flask:
     elif gmail_client is not None:
         logger.info("Sheets repo missing; LAST_HISTORY_ID will remain in-memory only.")
 
+    # this value is NOT USED anymore.
     app.config["LAST_HISTORY_ID"] = top_level_last_history_id
 
     @app.route("/", methods=["GET"])
@@ -1512,8 +1513,9 @@ def create_app() -> Flask:
             history_id,
         )
 
-        # In-memory last processed historyId
-        last_history_id = app.config.get("LAST_HISTORY_ID")
+        # instead of getting LAST_HISTORY_ID from the app.config.get("LAST_HISTORY_ID"), everytime it runs we just read it from the sheets directly.
+
+        last_history_id = repo.read_config_value("last_history_id") if repo else None
 
         # 1) First time: bootstrap LAST_HISTORY_ID, do not call history.list yet
         if last_history_id is None:
