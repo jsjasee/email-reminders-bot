@@ -8,6 +8,7 @@ from flask import Flask, jsonify, request
 from config import load_settings, Settings
 from telegram_bot import TelegramBot
 from sheets_repo import ReminderSheetRepository, Reminder
+from date_utils import working_days_forward_at_9am
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Collection
@@ -168,6 +169,17 @@ def create_app() -> Flask:
                 return timedelta(days=3)
             if key == "1w":
                 return timedelta(weeks=1)
+            return None
+
+        def working_day_offset_key_to_days(key: str) -> Optional[int]:
+            # if the key is "1h" or "1d" etc., when we pass it into the function it RETURNS NONE, so it fails the test and the normal
+            # "else" part of the code will trigger
+            if key == "1wd9":
+                return 1
+            if key == "2wd9":
+                return 2
+            if key == "3wd9":
+                return 3
             return None
 
         # ------- Helper: parse custom datetime DD/MM/YYYY HH:MM -> aware datetime ------- #
@@ -658,20 +670,22 @@ def create_app() -> Flask:
 
                     return "", 200
 
-                # Existing preset offsets (+1h, +1d, +3d, +1w)
-                delta = offset_key_to_delta(offset_key)
-                if delta is None:
-                    if callback_query_id:
-                        bot.answer_callback_query(
-                            callback_query_id,
-                            text="Unknown offset.",
-                            show_alert=False,
-                        )
-                    return "", 200
-
                 tz = ZoneInfo(settings.timezone)
                 now = datetime.now(tz)
-                due_at = now + delta
+                working_days = working_day_offset_key_to_days(offset_key)
+                if working_days is not None:
+                    due_at = working_days_forward_at_9am(now, working_days)
+                else:
+                    delta = offset_key_to_delta(offset_key)
+                    if delta is None:
+                        if callback_query_id:
+                            bot.answer_callback_query(
+                                callback_query_id,
+                                text="Unknown offset.",
+                                show_alert=False,
+                            )
+                        return "", 200
+                    due_at = now + delta
 
                 reminder = Reminder(
                     reminder_id=str(uuid.uuid4()),
@@ -895,20 +909,22 @@ def create_app() -> Flask:
 
                     return "", 200
 
-                # --- Existing preset offsets (+1h, +1d, +3d, +1w) --- #
-                delta = offset_key_to_delta(offset_key)
-                if delta is None:
-                    if callback_query_id:
-                        bot.answer_callback_query(
-                            callback_query_id,
-                            text="Unknown offset.",
-                            show_alert=False,
-                        )
-                    return "", 200
-
                 tz = ZoneInfo(settings.timezone)
                 now = datetime.now(tz)
-                due_at = now + delta
+                working_days = working_day_offset_key_to_days(offset_key)
+                if working_days is not None:
+                    due_at = working_days_forward_at_9am(now, working_days)
+                else:
+                    delta = offset_key_to_delta(offset_key)
+                    if delta is None:
+                        if callback_query_id:
+                            bot.answer_callback_query(
+                                callback_query_id,
+                                text="Unknown offset.",
+                                show_alert=False,
+                            )
+                        return "", 200
+                    due_at = now + delta
 
                 try:
                     meta = gmail_client.get_message_metadata(gmail_message_id)
@@ -1060,20 +1076,22 @@ def create_app() -> Flask:
 
                     return "", 200
 
-                # --- Existing fixed-offset snooze (+1h, +1d, +3d, +1w) --- #
-                delta = offset_key_to_delta(offset_key)
-                if delta is None:
-                    if callback_query_id:
-                        bot.answer_callback_query(
-                            callback_query_id,
-                            text="Unknown offset.",
-                            show_alert=False,
-                        )
-                    return "", 200
-
                 tz = ZoneInfo(settings.timezone)
                 now = datetime.now(tz)
-                new_due_at = now + delta
+                working_days = working_day_offset_key_to_days(offset_key)
+                if working_days is not None:
+                    new_due_at = working_days_forward_at_9am(now, working_days)
+                else:
+                    delta = offset_key_to_delta(offset_key)
+                    if delta is None:
+                        if callback_query_id:
+                            bot.answer_callback_query(
+                                callback_query_id,
+                                text="Unknown offset.",
+                                show_alert=False,
+                            )
+                        return "", 200
+                    new_due_at = now + delta
 
                 try:
                     updated = repo.update_reminder_due_at(reminder_id, new_due_at)

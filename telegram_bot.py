@@ -95,6 +95,18 @@ class TelegramBot:
         """
         markup = types.InlineKeyboardMarkup()
         buttons = [
+            types.InlineKeyboardButton(
+                "+1 Working Day 9AM",
+                callback_data="manual_offset:1wd9",
+            ),
+            types.InlineKeyboardButton(
+                "+2 Working Days 9AM",
+                callback_data="manual_offset:2wd9",
+            ),
+            types.InlineKeyboardButton(
+                "+3 Working Days 9AM",
+                callback_data="manual_offset:3wd9",
+            ),
             types.InlineKeyboardButton("+1 hour", callback_data="manual_offset:1h"),
             types.InlineKeyboardButton("+1 day", callback_data="manual_offset:1d"),
             types.InlineKeyboardButton("+3 days", callback_data="manual_offset:3d"),
@@ -103,7 +115,8 @@ class TelegramBot:
         ]
         markup.row(buttons[0], buttons[1])
         markup.row(buttons[2], buttons[3])
-        markup.row(buttons[4])
+        markup.row(buttons[4], buttons[5])
+        markup.row(buttons[6], buttons[7])
         return markup
 
     def answer_callback_query(
@@ -157,6 +170,18 @@ class TelegramBot:
         markup = types.InlineKeyboardMarkup()
         buttons = [
             types.InlineKeyboardButton(
+                "+1 Working Day 9AM",
+                callback_data=f"email_offset:{gmail_message_id}:1wd9",
+            ),
+            types.InlineKeyboardButton(
+                "+2 Working Days 9AM",
+                callback_data=f"email_offset:{gmail_message_id}:2wd9",
+            ),
+            types.InlineKeyboardButton(
+                "+3 Working Days 9AM",
+                callback_data=f"email_offset:{gmail_message_id}:3wd9",
+            ),
+            types.InlineKeyboardButton(
                 "+1 hour",
                 callback_data=f"email_offset:{gmail_message_id}:1h",
             ),
@@ -177,10 +202,11 @@ class TelegramBot:
                 callback_data=f"email_offset:{gmail_message_id}:custom",
             ),
         ]
-        # Layout: two rows of presets + one row for Custom
+        # Layout: working-day rows, existing presets, and custom
         markup.row(buttons[0], buttons[1])
         markup.row(buttons[2], buttons[3])
-        markup.row(buttons[4])
+        markup.row(buttons[4], buttons[5])
+        markup.row(buttons[6], buttons[7])
         return markup
 
     def build_reminder_control_keyboard(self, reminder_id: str) -> types.InlineKeyboardMarkup:
@@ -194,6 +220,18 @@ class TelegramBot:
         markup = types.InlineKeyboardMarkup()
 
         snooze_buttons = [
+            types.InlineKeyboardButton(
+                "+1 Working Day 9AM",
+                callback_data=f"reminder_extend:{reminder_id}:1wd9",
+            ),
+            types.InlineKeyboardButton(
+                "+2 Working Days 9AM",
+                callback_data=f"reminder_extend:{reminder_id}:2wd9",
+            ),
+            types.InlineKeyboardButton(
+                "+3 Working Days 9AM",
+                callback_data=f"reminder_extend:{reminder_id}:3wd9",
+            ),
             types.InlineKeyboardButton(
                 "+1 hour",
                 callback_data=f"reminder_extend:{reminder_id}:1h",
@@ -220,10 +258,11 @@ class TelegramBot:
             callback_data=f"reminder_complete:{reminder_id}",
         )
 
-        # Layout: 2 rows presets, 1 row Custom, 1 row Complete
+        # Layout: working-day rows, existing presets, custom, then complete
         markup.row(snooze_buttons[0], snooze_buttons[1])
         markup.row(snooze_buttons[2], snooze_buttons[3])
-        markup.row(snooze_buttons[4])
+        markup.row(snooze_buttons[4], snooze_buttons[5])
+        markup.row(snooze_buttons[6], snooze_buttons[7])
         markup.row(complete_button)
 
         return markup
